@@ -5,7 +5,7 @@ LIB_SRC   = fchip/eiii_fchip.cpp cem/eiii_cem3387.cpp cem/eiii_cem_calibration.c
 LIB_OBJ   = $(LIB_SRC:.cpp=.o)
 TRACES   ?= ../analysis/traces
 
-all: libeiiicore.a tests/fchip_unit tests/fchip_equiv tests/cem_unit tests/cem_vs_reference tests/cem_golden tests/cem_v2_unit tests/board_link tools/render_trace tools/eiii_fakehost tools/cem3387_lab tools/board_sim
+all: libeiiicore.a tests/fchip_unit tests/fchip_equiv tests/cem_unit tests/cem_vs_reference tests/cem_golden tests/cem_v2_unit tests/board_link tests/board_fw tools/render_trace tools/eiii_fakehost tools/cem3387_lab tools/board_sim
 
 libeiiicore.a: $(LIB_OBJ)
 	ar rcs $@ $^
@@ -20,12 +20,17 @@ $(LIB_OBJ): $(LIB_HDR)
 tests/%: tests/%.cpp libeiiicore.a $(LIB_HDR)
 	$(CXX) $(CXXFLAGS) $< libeiiicore.a -o $@
 
+# the board firmware's hardware-independent logic, built for the host
+tests/board_fw: tests/board_fw.cpp firmware/teensy41/src/board_logic.cpp firmware/teensy41/src/board_logic.h libeiiicore.a
+	$(CXX) $(CXXFLAGS) tests/board_fw.cpp firmware/teensy41/src/board_logic.cpp libeiiicore.a -o $@
+
 tools/%: tools/%.cpp libeiiicore.a $(LIB_HDR)
 	$(CXX) $(CXXFLAGS) -Ihost $< libeiiicore.a -o $@
 
 check: all
 	./tests/fchip_unit
 	./tests/board_link
+	./tests/board_fw
 	./tests/cem_unit
 	./tests/cem_golden 0dbb559bed479225 tests/cem_golden_ref.txt
 	./tests/cem_golden --v2 4bd99acd3c15aca1 tests/cem_v2_golden_ref.txt
@@ -35,6 +40,6 @@ check: all
 	python3 tests/standalone_acceptance.py $(TRACES)/standalone_accept
 
 clean:
-	rm -f $(LIB_OBJ) libeiiicore.a tests/fchip_unit tests/fchip_equiv tests/cem_unit tests/cem_vs_reference tests/cem_golden tests/cem_v2_unit tests/board_link tools/render_trace tools/eiii_fakehost tools/cem3387_lab tools/board_sim
+	rm -f $(LIB_OBJ) libeiiicore.a tests/fchip_unit tests/fchip_equiv tests/cem_unit tests/cem_vs_reference tests/cem_golden tests/cem_v2_unit tests/board_link tests/board_fw tools/render_trace tools/eiii_fakehost tools/cem3387_lab tools/board_sim
 
 .PHONY: all check clean
