@@ -187,8 +187,8 @@ void engine::drain_input()
 			double const g = input_gain(), rel = std::exp(-1.0 / (0.3 * m_cfg.rt.sample_rate));
 			for (size_t k = 0; k < n; ++k)
 			{
-				double const v = g * std::max(std::fabs(double(l[k])), std::fabs(double(r[k])));
-				m_env = v > m_env ? v : m_env * rel;
+				double const v[2] = { g * std::fabs(double(l[k])), g * std::fabs(double(r[k])) };
+				for (int c = 0; c < 2; ++c) m_env[c] = v[c] > m_env[c] ? v[c] : m_env[c] * rel;
 			}
 		}
 	}
@@ -416,8 +416,10 @@ bool engine::boot(std::string &err)
 	m_rt = std::make_unique<runtime>();
 	if (!m_rt->open(m_cfg.rt, err)) { m_rt.reset(); return false; }
 	m_rt->set_adc_source([this](double t, int16_t lr[2]) { adc_sample(t, lr); });
-	m_rt->set_adc_envelope([this] { return uint16_t(std::lround(std::min(m_env, 1.0) * 0x7fff)); });
-	m_env = 0;
+	m_rt->set_adc_envelope([this](uint16_t &l, uint16_t &r) {
+		l = uint16_t(std::lround(std::min(m_env[0], 1.0) * 0x7fff)); r = uint16_t(std::lround(std::min(m_env[1], 1.0) * 0x7fff));
+	});
+	m_env[0] = m_env[1] = 0;
 	if (!m_rt->open_warning().empty()) { std::lock_guard<std::mutex> g(m_hd_mutex); m_warning = m_rt->open_warning(); }
 	publish_hd_changes(true);
 	m_emu_frames = 0;

@@ -96,8 +96,10 @@ struct machine_t : public address_space
 	unsigned long long adc_left_reads[256] = {}, adc_right_reads[256] = {};   // per control-latch value (diagnostics)
 	// host audio input: (conversion time in emulated seconds) -> L/R ADC words; unset = silence
 	std::function<void(double, s16 *)> adc_source;
-	// IC24 X7, the input envelope followers (the OS's SAMPLE 5 VU meter): firmware ADC units; unset = adc_pot[7]
-	std::function<u16()> adc_env;   // right-word reads per multiplexer input with -POTSON active (statistics)
+	// the input envelope followers (the OS's SAMPLE 5 VU meter), firmware ADC units; unset = adc_pot[7] / silence.
+	// With the multiplexer at X7 and -POTSON low the OS reads the right follower through X7 (right word) and the
+	// left follower in the left word (the R bar follows X7; the L bar is assumed to read the left word, see adc_probe)
+	std::function<void(u16 &left, u16 &right)> adc_env;   // right-word reads per multiplexer input with -POTSON active (statistics)
 	FILE *log = nullptr;
 	unsigned long long unmapped = 0, ncr_logged = 0;
 	bool log_voice_starts = false;   // "START ..." line on stderr when a voice starts (regression scripts parse it)
@@ -283,6 +285,7 @@ struct machine_t : public address_space
 				// known; outside sampling the converter reads silence, as in the proven MAME model without a test input.
 				if (adc_source && (adc_ctrl == 0x08 || adc_ctrl == 0x38)) adc_source(double(boundary) / 10'000'000.0, adc_latch);
 				else adc_latch[0] = adc_latch[1] = 0;
+				if (adc_env && (adc_ctrl & 0x0f) == 0x07) { u16 l, r; adc_env(l, r); adc_latch[0] = s16(-s32(l)); }
 			}
 			if (off & 1)
 			{
@@ -291,7 +294,8 @@ struct machine_t : public address_space
 				{
 					unsigned const x = adc_ctrl & 7;
 					++adc_pot_reads[x];
-					return u16(-s32(x == 7 && adc_env ? adc_env() : adc_pot[x]));
+					if (x == 7 && adc_env) { u16 l, r; adc_env(l, r); return u16(-s32(r)); }
+					return u16(-s32(adc_pot[x]));
 				}
 				return u16(adc_latch[1]);
 			}

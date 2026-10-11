@@ -62,6 +62,8 @@ int main()
 	for (double a : { 1.0, 0.25, 0.05 }) { amp = a; char w[64]; snprintf(w, sizeof w, "SAMPLE 5, tone at %.2f of full scale", a); step(t, w, 1.0); }
 	amp = 0.5; amp_r = 0.0;
 	step(t, "SAMPLE 5, tone 0.5 left only", 1.0);
+	amp_r = 0.25;
+	step(t, "SAMPLE 5, tone 0.5 left, 0.125 right", 1.0);
 	amp_r = 1.0;
 	tone = false;
 	step(t, "SAMPLE 5, silence", 1.0);

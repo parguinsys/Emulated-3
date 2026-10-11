@@ -276,7 +276,7 @@ void runtime::set_adc_source(std::function<void(double, int16_t[2])> source)
 	m->m.adc_source = [src = std::move(source)](double t, s16 *lr) { int16_t v[2] = { 0, 0 }; src(t, v); lr[0] = v[0]; lr[1] = v[1]; };
 }
 
-void runtime::set_adc_envelope(std::function<uint16_t()> envelope) { m->m.adc_env = std::move(envelope); }
+void runtime::set_adc_envelope(std::function<void(uint16_t &, uint16_t &)> envelope) { m->m.adc_env = std::move(envelope); }
 
 std::string runtime::hd_changes(unsigned id) const { harddisk_image_device *h = m->hd_image(id); return h ? h->export_changes() : std::string(); }
 size_t runtime::hd_changed_sectors(unsigned id) const { harddisk_image_device *h = m->hd_image(id); return h ? h->changed_sectors() : 0; }
