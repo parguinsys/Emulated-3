@@ -95,7 +95,9 @@ struct machine_t : public address_space
 	unsigned long long adc_pot_reads[8] = {};
 	unsigned long long adc_left_reads[256] = {}, adc_right_reads[256] = {};   // per control-latch value (diagnostics)
 	// host audio input: (conversion time in emulated seconds) -> L/R ADC words; unset = silence
-	std::function<void(double, s16 *)> adc_source;   // right-word reads per multiplexer input with -POTSON active (statistics)
+	std::function<void(double, s16 *)> adc_source;
+	// IC24 X7, the input envelope followers (the OS's SAMPLE 5 VU meter): firmware ADC units; unset = adc_pot[7]
+	std::function<u16()> adc_env;   // right-word reads per multiplexer input with -POTSON active (statistics)
 	FILE *log = nullptr;
 	unsigned long long unmapped = 0, ncr_logged = 0;
 	bool log_voice_starts = false;   // "START ..." line on stderr when a voice starts (regression scripts parse it)
@@ -285,7 +287,12 @@ struct machine_t : public address_space
 			if (off & 1)
 			{
 				++adc_right_reads[adc_ctrl];
-				if (!BIT(adc_ctrl, 3)) { ++adc_pot_reads[adc_ctrl & 7]; return u16(-s32(adc_pot[adc_ctrl & 7])); }
+				if (!BIT(adc_ctrl, 3))
+				{
+					unsigned const x = adc_ctrl & 7;
+					++adc_pot_reads[x];
+					return u16(-s32(x == 7 && adc_env ? adc_env() : adc_pot[x]));
+				}
 				return u16(adc_latch[1]);
 			}
 			return u16(adc_latch[0]);

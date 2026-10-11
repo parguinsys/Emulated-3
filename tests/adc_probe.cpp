@@ -32,8 +32,9 @@ int main()
 	if (cfg.rt.hd_path.empty()) { printf("SKIP: set EIII_ROM_DIR, EIII_HD\n"); return 77; }
 	rig t(cfg);
 	bool tone = false;
+	double amp = 0.5, amp_r = 1.0;   // right channel = amp * amp_r
 	t.input = [&](uint64_t f0, float *l, float *r, size_t n) {
-		for (size_t k = 0; k < n; ++k) { float const v = tone ? float(0.5 * std::sin(2 * M_PI * 1000.0 * double(f0 + k) / 48000.0)) : 0.f; l[k] = v; r[k] = v; }
+		for (size_t k = 0; k < n; ++k) { float const v = tone ? float(amp * std::sin(2 * M_PI * 1000.0 * double(f0 + k) / 48000.0)) : 0.f; l[k] = v; r[k] = float(amp_r) * v; }
 	};
 	if (!t.wait_row(0, "P00 ", 25.0)) { printf("FAIL no main screen\n"); return 1; }
 	t.pump(1.0);
@@ -44,6 +45,10 @@ int main()
 	step(t, "SAMPLE module, tone", 1.0);
 	t.press("keypad_5"); t.pump(0.5);
 	step(t, "SAMPLE 5 (Setup - VU Meter), tone", 2.0);
+	for (double a : { 1.0, 0.25, 0.05 }) { amp = a; char w[64]; snprintf(w, sizeof w, "SAMPLE 5, tone at %.2f of full scale", a); step(t, w, 1.0); }
+	amp = 0.5; amp_r = 0.0;
+	step(t, "SAMPLE 5, tone 0.5 left only", 1.0);
+	amp_r = 1.0;
 	tone = false;
 	step(t, "SAMPLE 5, silence", 1.0);
 	tone = true;

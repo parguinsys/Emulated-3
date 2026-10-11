@@ -180,6 +180,17 @@ void engine::drain_input()
 		if (!n) break;
 		for (size_t k = 0; k < n; ++k) { m_in_buf.push_back(l[k]); m_in_buf.push_back(r[k]); }
 		m_in_end += n;
+		// the input envelope followers (VU meter) see every frame as it arrives, sampling or not: peak hold with
+		// a 300 ms release, after the Sample Input level.  The board's follower circuit is not documented.
+		if (m_rt)
+		{
+			double const g = input_gain(), rel = std::exp(-1.0 / (0.3 * m_cfg.rt.sample_rate));
+			for (size_t k = 0; k < n; ++k)
+			{
+				double const v = g * std::max(std::fabs(double(l[k])), std::fabs(double(r[k])));
+				m_env = v > m_env ? v : m_env * rel;
+			}
+		}
 	}
 	uint64_t const base = m_in_end - m_in_buf.size() / 2;
 	int64_t const cur = int64_t(m_emu_frames) - m_ring_to_emu - int64_t(m_latency) - 64;   // input index now in use
@@ -189,6 +200,14 @@ void engine::drain_input()
 		size_t const drop = size_t(std::min<uint64_t>(uint64_t(cur) - base, m_in_buf.size() / 2));
 		m_in_buf.erase(m_in_buf.begin(), m_in_buf.begin() + long(2 * drop));
 	}
+}
+
+// engine thread: input level, the Sample Input slider (ADC multiplexer X0).  The original dbx 2155 gain law is not
+// documented; assumed: centre of travel = unity, +-20 dB at the ends (log taper), silent at the very bottom.
+double engine::input_gain() const
+{
+	double const p = double(m_rt->adc_input(0)) / double(0x7100);
+	return p < 0.01 ? 0.0 : std::pow(10.0, (std::min(p, 1.0) - 0.5) * 2.0);
 }
 
 // engine thread, inside the emulation: the analog input at a conversion (emulated seconds)
@@ -205,10 +224,7 @@ void engine::adc_sample(double t, int16_t lr[2])
 	if (pos < 0 || pos >= double(m_in_buf.size() / 2 - 1)) return;
 	size_t const i = size_t(pos);
 	float const f = float(pos - double(i));
-	// input level: the Sample Input slider (ADC multiplexer X0).  The original dbx 2155 gain law is not documented;
-	// assumed: centre of travel = unity, +-20 dB at the ends (log taper), silent at the very bottom.
-	double const p = double(m_rt->adc_input(0)) / double(0x7100);
-	double const gain = p < 0.01 ? 0.0 : std::pow(10.0, (std::min(p, 1.0) - 0.5) * 2.0);
+	double const gain = input_gain();   // the Sample Input slider
 	for (int c = 0; c < 2; ++c)
 	{
 		float const x = m_in_buf[2 * i + c] + (m_in_buf[2 * (i + 1) + c] - m_in_buf[2 * i + c]) * f;
@@ -400,6 +416,8 @@ bool engine::boot(std::string &err)
 	m_rt = std::make_unique<runtime>();
 	if (!m_rt->open(m_cfg.rt, err)) { m_rt.reset(); return false; }
 	m_rt->set_adc_source([this](double t, int16_t lr[2]) { adc_sample(t, lr); });
+	m_rt->set_adc_envelope([this] { return uint16_t(std::lround(std::min(m_env, 1.0) * 0x7fff)); });
+	m_env = 0;
 	if (!m_rt->open_warning().empty()) { std::lock_guard<std::mutex> g(m_hd_mutex); m_warning = m_rt->open_warning(); }
 	publish_hd_changes(true);
 	m_emu_frames = 0;

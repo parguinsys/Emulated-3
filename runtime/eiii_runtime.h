@@ -89,6 +89,9 @@ public:
 	// The ADC board's analog input: called on the instance's thread at each conversion the OS performs (44 053 or
 	// 33 333 Hz, paced by ADC WAIT), with the conversion time in emulated seconds; returns the L/R ADC words.
 	void set_adc_source(std::function<void(double t_seconds, int16_t lr[2])> source);
+	// The input envelope followers on multiplexer input X7, read by the OS's VU meter (SAMPLE 5): firmware ADC units
+	// 0..0x7FFF.  Unset: the static X7 value.
+	void set_adc_envelope(std::function<uint16_t()> envelope);
 
 	// ---- hard disk changes ----
 	// Hard disk images are opened read-only; what the OS writes (Save Bank, ...) is kept as a change set over the image.

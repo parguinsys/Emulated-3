@@ -159,6 +159,8 @@ private:
 	uint64_t m_hd_seen[8] = {};              // engine thread: write counts last published
 	int64_t m_hd_dirty_ns[8] = {};
 	void adc_sample(double t, int16_t lr[2]);
+	double input_gain() const;               // engine thread, m_rt set
+	double m_env = 0;                        // engine thread: input envelope follower (0..1 of full scale)
 	spsc_queue<media_request *> m_media_in{16}, m_media_out{16};   // main -> engine -> main (ownership travels)
 	unsigned m_media_inflight = 0;           // main thread
 	runtime_config m_view;                   // main thread: configuration in use as last reported
