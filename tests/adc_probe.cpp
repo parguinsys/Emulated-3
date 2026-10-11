@@ -19,7 +19,21 @@ static void step(rig &t, char const *what, double secs)
 	reads(t, l0, r0);
 	t.pump(secs);
 	reads(t, l1, r1);
-	printf("%s\n  LCD [%s] [%s] [%s] [%s]\n  reads:", what, t.row(0).c_str(), t.row(1).c_str(), t.row(2).c_str(), t.row(3).c_str());
+	printf("%s\n  LCD [%s] [%s] [%s] [%s]\n", what, t.row(0).c_str(), t.row(1).c_str(), t.row(2).c_str(), t.row(3).c_str());
+	// the meter bars are custom (CGRAM) characters, shown as '.' above: their codes and lit dots per row
+	eiii::lcd_view v; t.ui.read_lcd(v);
+	for (int row = 1; row < 4; ++row)
+	{
+		int lit = 0;
+		printf("  row %d codes", row);
+		for (int c = 7; c < eiii::lcd_view::cols; ++c)
+		{
+			printf(" %02X", v.code[row][c]);
+			for (int y = 0; y < 8; ++y) lit += __builtin_popcount(v.dots[row][c][y] & 0x1f);
+		}
+		printf("  lit dots %d\n", lit);
+	}
+	printf("  reads:");
 	for (unsigned c = 0; c < 256; ++c)
 		if (l1[c] != l0[c] || r1[c] != r0[c]) printf(" ctrl %02X L %llu R %llu;", c, (unsigned long long)(l1[c] - l0[c]), (unsigned long long)(r1[c] - r0[c]));
 	printf("\n");
