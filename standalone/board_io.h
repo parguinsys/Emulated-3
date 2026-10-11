@@ -4,6 +4,7 @@
 #pragma once
 #include "../host/eiii_backend.h"
 #include "../host/eiii_board_link.h"
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,8 @@ public:
 	uint64_t frames_sent() const { return m_sent; }
 	double seconds_waiting() const { return m_wait; }   // blocked on a full board buffer (idle time)
 	bool failed() const { return m_failed; }
+	double longest_write() const { return m_max_write; }    // longest time blocked writing one packet
+	double longest_gap() const { return m_max_gap; }        // longest time between two packets (excluding credit waits)
 
 private:
 	bool read_some(int timeout_ms);
@@ -36,6 +39,7 @@ private:
 	eiii::board::status m_st;
 	bool m_have_status = false, m_failed = false;
 	uint64_t m_sent = 0;
-	double m_wait = 0;
+	double m_wait = 0, m_max_write = 0, m_max_gap = 0;
+	std::chrono::steady_clock::time_point m_last{};
 	std::vector<uint8_t> m_midi, m_pkt;
 };

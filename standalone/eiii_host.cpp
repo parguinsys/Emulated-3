@@ -526,8 +526,9 @@ int main(int argc, char **argv)
 	if (board.is_open())
 	{
 		t_wait += board.seconds_waiting();
-		fprintf(stderr, "board: %llu frames sent (%.3f s), board underruns %u\n", (unsigned long long)board.frames_sent(),
-			board.frames_sent() / 96000.0, board.status().underruns);
+		fprintf(stderr, "board: %llu frames sent (%.3f s), board underruns %u; waited %.3f s for buffer space, longest packet write "
+			"%.1f ms, longest gap between packets %.1f ms\n", (unsigned long long)board.frames_sent(), board.frames_sent() / 96000.0,
+			board.status().underruns, board.seconds_waiting(), board.longest_write() * 1e3, board.longest_gap() * 1e3);
 		board.close();
 	}
 	if (g_opt.stats || audio.is_open() || g_opt.realtime || !g_opt.board.empty())

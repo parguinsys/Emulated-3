@@ -1,10 +1,15 @@
 #include "board_io.h"
+#include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -12,7 +17,18 @@ board_port::~board_port() { close(); }
 
 bool board_port::open(std::string const &path, std::string &error)
 {
-	m_fd = ::open(path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
+	struct stat sb;
+	if (::stat(path.c_str(), &sb) == 0 && S_ISSOCK(sb.st_mode))   // tools/board_sim
+	{
+		std::signal(SIGPIPE, SIG_IGN);   // a closed simulator is reported as a lost link
+		sockaddr_un addr{};
+		addr.sun_family = AF_UNIX;
+		strncpy(addr.sun_path, path.c_str(), sizeof addr.sun_path - 1);
+		m_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+		if (m_fd >= 0 && connect(m_fd, (sockaddr *)&addr, sizeof addr)) { ::close(m_fd); m_fd = -1; }
+		if (m_fd >= 0) fcntl(m_fd, F_SETFL, O_NONBLOCK);
+	}
+	else m_fd = ::open(path.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
 	if (m_fd < 0) { error = path + ": " + strerror(errno); return false; }
 	termios tio;
 	if (tcgetattr(m_fd, &tio) == 0) { cfmakeraw(&tio); tcsetattr(m_fd, TCSANOW, &tio); }   // a tty: raw bytes
@@ -60,10 +76,15 @@ void board_port::send(uint8_t const *data, size_t n)
 	if (m_fd < 0 || m_failed) return;
 	unsigned const frames = n > 10 && data[2] == eiii::board::BLOCK ? data[10] : 0;
 	// credit: frames in flight (sent, not yet played) must fit the board's buffer
-	auto const t0 = std::chrono::steady_clock::now();
+	using clk = std::chrono::steady_clock;
+	auto const t0 = clk::now();
+	if (m_sent) m_max_gap = std::max(m_max_gap, std::chrono::duration<double>(t0 - m_last).count());
 	while (!m_failed && uint32_t(m_sent + frames) - m_st.played > m_st.capacity) read_some(1);
-	m_wait += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+	auto const t1 = clk::now();
+	m_wait += std::chrono::duration<double>(t1 - t0).count();
 	write_all(data, n);
+	m_last = clk::now();
+	m_max_write = std::max(m_max_write, std::chrono::duration<double>(m_last - t1).count());
 	m_sent += frames;
 }
 
