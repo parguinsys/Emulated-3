@@ -22,6 +22,7 @@
 #include "clap/clap.h"
 #include "plugin/eiii_clap_entry.h"
 #include "panel/eiii_panel_adapter.h"
+#include "runtime/eiii_bank_import.h"
 #include "runtime/eiii_engine.h"
 #include "standalone/ui_macro.h"
 #include "ui/panel_window.h"
@@ -35,6 +36,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <spawn.h>
 #include <string>
@@ -349,6 +351,14 @@ struct instance
 	std::thread export_thread;       // "save hard disk with its changes as": copies the image, off the plugin's threads
 	std::atomic<bool> export_done{false};
 	std::string export_result;
+	// EIIIX / ESI-32 discs: converted (once, cached) to an EIII disc off the plugin's threads, then mounted
+	std::thread convert_thread;
+	std::atomic<bool> convert_done{false}, convert_cancel{false};
+	bool convert_ok = false;
+	unsigned convert_id = 0;
+	std::string convert_src, convert_dst, convert_result;
+	std::map<std::string, std::string> converted_from;   // converted copy -> the disc the user chose
+	std::vector<std::pair<unsigned, std::string>> convert_queue;
 	std::chrono::steady_clock::time_point media_msg_until;
 
 	static instance *of(clap_plugin_t const *p) { return static_cast<instance *>(p->plugin_data); }
@@ -403,7 +413,41 @@ struct instance
 	// [main-thread] requests (validated and applied by the engine; outcome in poll_media())
 	void change_scsi(unsigned id, eiii::scsi_kind kind, std::string const &path)
 	{
-		if (!eng.set_scsi(id, kind, path)) show_media_message("busy: try again");
+		std::string mount = path;
+		if (kind == eiii::scsi_kind::cd && !path.empty() && eiii::bank_import::needs_conversion(path))
+		{
+			mount = converted_copy(path);
+			if (mount.empty()) { start_conversion(id, path); return; }
+		}
+		if (!eng.set_scsi(id, kind, mount)) show_media_message("busy: try again");
+	}
+	static std::string convert_dir() { std::string const d = default_media_dir(); return d.empty() ? d : d + "/converted"; }
+	// the up-to-date converted copy of an EIIIX / ESI-32 disc, or "" if it has to be made first
+	std::string converted_copy(std::string const &src)
+	{
+		std::string const dst = eiii::bank_import::cached_path(src, convert_dir());
+		if (convert_dir().empty() || !eiii::bank_import::cache_fresh(src, dst)) return {};
+		converted_from[dst] = src;
+		return dst;
+	}
+	void start_conversion(unsigned id, std::string const &src)
+	{
+		if (convert_thread.joinable()) { convert_queue.emplace_back(id, src); return; }
+		if (convert_dir().empty()) { show_media_message("no folder for converted discs (HOME not set)"); return; }
+		convert_id = id; convert_src = src; convert_dst = eiii::bank_import::cached_path(src, convert_dir());
+		convert_done = false; convert_cancel = false;
+		show_media_message("converting " + disc_name(src) + " for the EIII\xE2\x80\xA6");
+		media_msg_until = std::chrono::steady_clock::now() + std::chrono::hours(1);
+		convert_thread = std::thread([this] {
+			std::string summary, err;
+			mkdir(default_media_dir().c_str(), 0755); mkdir(convert_dir().c_str(), 0755);
+			convert_ok = eiii::bank_import::convert(convert_src, convert_dst, summary, err, &convert_cancel);
+			if (convert_ok) fprintf(stderr, "EIII Rack: %s -> %s\n%s", convert_src.c_str(), convert_dst.c_str(), summary.c_str());
+			size_t banks = 0;
+			for (size_t i = 0; i < summary.size(); i = summary.find('\n', i) + 1) { banks += summary[i] == 'B'; if (summary.find('\n', i) == std::string::npos) break; }
+			convert_result = convert_ok ? "converted " + disc_name(convert_src) + ": " + std::to_string(banks) + " banks" : err;
+			convert_done = true;
+		});
 	}
 	void change_setting(eiii::media_slot sl, std::string const &value)
 	{
@@ -422,7 +466,8 @@ struct instance
 				eiii::scsi_target &t = media.scsi[r.scsi_id];
 				if (t.kind == eiii::scsi_kind::cd && !t.path.empty()) media.cd_last_dir = dir_name(t.path);
 				if (t.kind != r.kind) { t.kind = r.kind; changed = true; }
-				set(t.path, r.kind == eiii::scsi_kind::none ? std::string() : r.path);
+				auto const orig = converted_from.find(r.path);         // a converted disc is kept as the one the user chose
+				set(t.path, r.kind == eiii::scsi_kind::none ? std::string() : orig != converted_from.end() ? orig->second : r.path);
 			}
 			else if (r.slot == eiii::media_slot::rom) set(media.rom_dir, r.path);
 			else if (r.slot == eiii::media_slot::cem_model) set(media.cem_model, r.path);
@@ -441,6 +486,13 @@ struct instance
 			else change_scsi(pick_id, what == "cd" ? eiii::scsi_kind::cd : eiii::scsi_kind::hd, choice);
 		}
 		if (export_thread.joinable() && export_done) { export_thread.join(); show_media_message(export_result); }
+		if (convert_thread.joinable() && convert_done)
+		{
+			convert_thread.join();
+			show_media_message(convert_result);
+			if (convert_ok) { converted_from[convert_dst] = convert_src; if (!eng.set_scsi(convert_id, eiii::scsi_kind::cd, convert_dst)) show_media_message("busy: try again"); }
+			if (!convert_queue.empty()) { auto const [id, src] = convert_queue.front(); convert_queue.erase(convert_queue.begin()); change_scsi(id, eiii::scsi_kind::cd, src); }
+		}
 		if (eng.hd_changes_serial() != hd_serial) { hd_serial = eng.hd_changes_serial(); dirty(); }
 		if (std::string const w = eng.take_warning(); !w.empty()) show_media_message(w);
 		update_menu_status();
@@ -841,6 +893,8 @@ void p_destroy(clap_plugin_t const *p)
 	gui_destroy(p);
 	s->pick.cancel();
 	if (s->export_thread.joinable()) s->export_thread.join();
+	s->convert_cancel = true;
+	if (s->convert_thread.joinable()) s->convert_thread.join();
 	if (s->timer != CLAP_INVALID_ID && s->host_timer) s->host_timer->unregister_timer(s->host, s->timer);
 	s->eng.shutdown();
 	delete s;
@@ -863,6 +917,18 @@ bool p_activate(clap_plugin_t const *p, double sample_rate, uint32_t, uint32_t m
 		for (unsigned id = 1; id < 8; ++id) c.rt.hd_changes[id] = s->media.hd_changes[id];
 		c.rt.rom_dir = s->media.rom_dir; c.rt.hd_path = s->media.hd(); c.rt.cd_path = s->media.cd(); c.rt.cem_model = s->media.cem_model;
 		for (unsigned id = 4; id < 8; ++id) c.rt.scsi[id] = s->media.scsi[id];
+		// EIIIX / ESI-32 discs: start with their converted copy, or with the drive empty while it is being made
+		std::vector<unsigned> to_convert;
+		for (unsigned id = 3; id < 8; ++id)
+		{
+			std::string &path = id == 3 ? c.rt.cd_path : c.rt.scsi[id].path;
+			if ((id == 3 || c.rt.scsi[id].kind == eiii::scsi_kind::cd) && !path.empty() && eiii::bank_import::needs_conversion(path))
+			{
+				std::string const conv = s->converted_copy(path);
+				if (conv.empty()) to_convert.push_back(id);
+				path = conv;
+			}
+		}
 		c.rt.sample_rate = sample_rate;
 		c.max_block = std::max<uint32_t>(max_frames, 64);
 		c.latency_margin = s->media.latency_margin;
@@ -876,6 +942,7 @@ bool p_activate(clap_plugin_t const *p, double sample_rate, uint32_t, uint32_t m
 		// restartComponent(kLatencyChanged) from inside the host's own setActive(), and Qtractor crashed on that.
 		if (lat != s->latency) { s->latency = lat; if (restart && s->host_latency) s->host_latency->changed(s->host); }
 		s->setup_macro();
+		for (unsigned id : to_convert) s->start_conversion(id, id == 3 ? s->media.cd() : s->media.scsi[id].path);
 	}
 	return true;
 }

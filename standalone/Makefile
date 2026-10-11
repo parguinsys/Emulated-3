@@ -27,7 +27,7 @@ SFINC     = -I$(MAME)/src/osd -I$(SFDIR)/build/MAME -I$(SFDIR)/source -I$(SFDIR)
 
 SRC_HOST  = eiii_host.cpp eiii_gui.cpp host_io.cpp shim/emu_shim.cpp eiii_scsi.cpp diserial_shim.cpp
 SRC_CORE  = ../fchip/eiii_fchip.cpp ../cem/eiii_cem3387.cpp ../cem/eiii_cem_calibration.cpp ../cem/eiii_cem_cv_conditioning.cpp \
-            ../cem/eiii_cem3387_v2.cpp ../host/eiii_backend.cpp ../runtime/eiii_runtime.cpp ../runtime/eiii_engine.cpp \
+            ../cem/eiii_cem3387_v2.cpp ../host/eiii_backend.cpp ../runtime/eiii_runtime.cpp ../runtime/eiii_engine.cpp ../runtime/eiii_bank_import.cpp \
             ../panel/eiii_lcd.cpp ../panel/eiii_panel_model.cpp ../panel/eiii_panel_adapter.cpp
 # UI layer (software renderer, panel artwork) — linked by the GUI/plugin/tools only
 SRC_UI    = ../ui/raster.cpp ../ui/panel_view.cpp ../ui/panel_menu.cpp ../ui/x11_window.cpp ../ui/panel_window.cpp

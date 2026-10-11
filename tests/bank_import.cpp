@@ -1,8 +1,11 @@
-// Banks converted by tools/eiii_bank_import.py (EIIIX / ESI-32 -> EIII) load and play through the original OS.
-// EIII_IMPORT_CD: the converted CD image, mounted as D3.  EIII_IMPORT_BANKS: "NN:Preset name,NN:Preset name,..." -
+// Banks converted from EIIIX / ESI-32 discs (runtime/eiii_bank_import, as the plugin does on mount, or
+// tools/eiii_bank_import.py) load and play through the original OS.
+// EIII_IMPORT_CD: an EIIIX / ESI-32 disc (converted here first, to EIII_IMPORT_OUT or /tmp) or an already converted
+// image, mounted as D3.  EIII_IMPORT_BANKS: "NN:Preset name,NN:Preset name,..." -
 // each bank number is loaded with Load Bank, its selected preset must be shown on the main screen (an empty name:
 // any preset), and notes on all MIDI channels must sound.
 #include "panel_rig.h"
+#include "runtime/eiii_bank_import.h"
 #include "runtime/eiii_runtime.h"
 #include <sstream>
 
@@ -47,6 +50,16 @@ int main()
 	std::string const cd = env("EIII_IMPORT_CD"), banks = env("EIII_IMPORT_BANKS");
 	if (cfg.rt.hd_path.empty() || cd.empty() || banks.empty()) { printf("SKIP: set EIII_ROM_DIR, EIII_HD, EIII_IMPORT_CD, EIII_IMPORT_BANKS\n"); return 77; }
 	cfg.rt.cd_path = cd;
+	if (eiii::bank_import::needs_conversion(cd))
+	{
+		std::string const out = env("EIII_IMPORT_OUT", "/tmp/eiii_bank_import_test.iso");
+		std::string summary, err;
+		bool const ok = eiii::bank_import::convert(cd, out, summary, err);
+		CHECK(ok, "converted %s -> %s %s", cd.c_str(), out.c_str(), err.c_str());
+		printf("%s", summary.c_str());
+		CHECK(eiii::bank_import::cache_fresh(cd, out) && !eiii::bank_import::needs_conversion(out), "converted copy is up to date and needs no conversion");
+		cfg.rt.cd_path = out;
+	}
 	rig t(cfg);
 	CHECK(t.wait_row(0, "P00 ", 25.0), "power-on main screen at %.2f s: [%s]", t.now(), t.row(0).c_str());
 	t.pump(1.0);
