@@ -270,10 +270,10 @@ scsi_kind runtime::drive_kind(unsigned id) const
 	return m->extra[id].hd ? scsi_kind::hd : m->extra[id].cd ? scsi_kind::cd : scsi_kind::none;
 }
 
-void runtime::set_adc_source(std::function<void(double, int16_t[2])> source)
+void runtime::set_adc_source(std::function<void(double, bool, int16_t[2])> source)
 {
 	if (!source) { m->m.adc_source = nullptr; return; }
-	m->m.adc_source = [src = std::move(source)](double t, s16 *lr) { int16_t v[2] = { 0, 0 }; src(t, v); lr[0] = v[0]; lr[1] = v[1]; };
+	m->m.adc_source = [src = std::move(source)](double t, bool khz44, s16 *lr) { int16_t v[2] = { 0, 0 }; src(t, khz44, v); lr[0] = v[0]; lr[1] = v[1]; };
 }
 
 void runtime::set_adc_envelope(std::function<void(uint16_t &, uint16_t &)> envelope) { m->m.adc_env = std::move(envelope); }

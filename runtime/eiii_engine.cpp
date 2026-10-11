@@ -211,25 +211,63 @@ double engine::input_gain() const
 }
 
 // engine thread, inside the emulation: the analog input at a conversion (emulated seconds)
-void engine::adc_sample(double t, int16_t lr[2])
+void engine::adc_sample(double t, bool khz44, int16_t lr[2])
 {
 	lr[0] = lr[1] = 0;
 	if (!m_rt) return;
 	double const idx = t * m_cfg.rt.sample_rate - double(m_ring_to_emu) - double(m_latency);   // input index
 	// the audio thread hands over each block's input before it pulls that block, so frames the emulation may reach
 	// are in the ring by now; fetch them if this step started before they arrived
-	if (idx + 1 >= double(m_in_end)) drain_input();
-	if (m_in_buf.size() < 4) return;
-	double const pos = idx - double(m_in_end - m_in_buf.size() / 2);
-	if (pos < 0 || pos >= double(m_in_buf.size() / 2 - 1)) return;
-	size_t const i = size_t(pos);
-	float const f = float(pos - double(i));
+	if (idx + aa_taps / 2 >= double(m_in_end)) drain_input();
+	size_t const frames = m_in_buf.size() / 2;
+	if (frames < 4) return;
+	double const pos = idx - double(m_in_end - frames);
+	if (pos < 0 || pos >= double(frames - 1)) return;
+	// the board's anti-alias filter (20 kHz with +KHZ44, else 14.2 kHz) as a windowed-sinc kernel around pos; frames
+	// outside the buffer count as the nearest edge frame
+	int64_t const i0 = int64_t(std::floor(pos)) - aa_taps / 2 + 1;
+	double const ph = (pos - std::floor(pos)) * aa_phases;
+	int const p = std::min(int(ph), aa_phases - 1);
+	double const w = ph - p;
+	float const *k0 = &m_aa[khz44][size_t(p) * aa_taps], *k1 = k0 + aa_taps;
+	double acc[2] = { 0, 0 };
+	for (int k = 0; k < aa_taps; ++k)
+	{
+		size_t const j = size_t(std::clamp<int64_t>(i0 + k, 0, int64_t(frames) - 1));
+		double const h = k0[k] + (k1[k] - k0[k]) * w;
+		acc[0] += h * m_in_buf[2 * j]; acc[1] += h * m_in_buf[2 * j + 1];
+	}
 	double const gain = input_gain();   // the Sample Input slider
 	for (int c = 0; c < 2; ++c)
 	{
-		float const x = m_in_buf[2 * i + c] + (m_in_buf[2 * (i + 1) + c] - m_in_buf[2 * i + c]) * f;
-		double const v = std::lround(double(x) * gain * 32767.0);
+		double const v = std::lround(acc[c] * gain * 32767.0);
 		lr[c] = int16_t(std::clamp(v, -32768.0, 32767.0));
+	}
+}
+
+// anti-alias kernels at the host rate: [khz44][phase 0..aa_phases][tap], Blackman-windowed sinc, unity gain at DC.
+// Phase p is the fractional position p / aa_phases between input frames (aa_phases + 1 rows for interpolation).
+void engine::build_aa()
+{
+	double const sr = m_cfg.rt.sample_rate;
+	for (int m = 0; m < 2; ++m)
+	{
+		double const fc = std::min(m ? 20000.0 : 14200.0, 0.45 * sr) / sr;   // cycles per input frame
+		m_aa[m].assign(size_t(aa_phases + 1) * aa_taps, 0.0f);
+		for (int p = 0; p <= aa_phases; ++p)
+		{
+			double const frac = double(p) / aa_phases;
+			double sum = 0, h[aa_taps];
+			for (int k = 0; k < aa_taps; ++k)
+			{
+				double const x = double(k - aa_taps / 2 + 1) - frac;                // tap position relative to pos
+				double const u = (x + aa_taps / 2.0) / aa_taps;                      // 0..1 across the window
+				double const win = u <= 0 || u >= 1 ? 0.0 : 0.42 - 0.5 * std::cos(2 * M_PI * u) + 0.08 * std::cos(4 * M_PI * u);
+				double const s = std::fabs(x) < 1e-12 ? 2 * fc : std::sin(2 * M_PI * fc * x) / (M_PI * x);
+				h[k] = s * win; sum += h[k];
+			}
+			for (int k = 0; k < aa_taps; ++k) m_aa[m][size_t(p) * aa_taps + k] = float(h[k] / sum);
+		}
 	}
 }
 
@@ -343,6 +381,7 @@ void engine::start(engine_config const &cfg)
 	// the ring only needs one block plus a margin for the engine thread's scheduling and for stretches where the
 	// emulation runs slower than real time
 	double const margin_48k = cfg.latency_margin ? double(cfg.latency_margin) : double(engine_config::default_latency_margin);
+	build_aa();
 	m_latency = unsigned(cfg.max_block) + unsigned(std::lround(margin_48k * sr / 48000.0));
 	if (m_latency > m_ring.capacity() / 2) m_latency = unsigned(m_ring.capacity() / 2);
 	m_quit = false;
@@ -415,7 +454,7 @@ bool engine::boot(std::string &err)
 {
 	m_rt = std::make_unique<runtime>();
 	if (!m_rt->open(m_cfg.rt, err)) { m_rt.reset(); return false; }
-	m_rt->set_adc_source([this](double t, int16_t lr[2]) { adc_sample(t, lr); });
+	m_rt->set_adc_source([this](double t, bool khz44, int16_t lr[2]) { adc_sample(t, khz44, lr); });
 	m_rt->set_adc_envelope([this](uint16_t &l, uint16_t &r) {
 		l = uint16_t(std::lround(std::min(m_env[0], 1.0) * 0x7fff)); r = uint16_t(std::lround(std::min(m_env[1], 1.0) * 0x7fff));
 	});

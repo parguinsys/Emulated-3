@@ -95,7 +95,7 @@ struct machine_t : public address_space
 	unsigned long long adc_pot_reads[8] = {};
 	unsigned long long adc_left_reads[256] = {}, adc_right_reads[256] = {};   // per control-latch value (diagnostics)
 	// host audio input: (conversion time in emulated seconds) -> L/R ADC words; unset = silence
-	std::function<void(double, s16 *)> adc_source;
+	std::function<void(double, bool, s16 *)> adc_source;   // (time, +KHZ44, L/R words)
 	// the input envelope followers (the OS's SAMPLE 5 VU meter), firmware ADC units; unset = adc_pot[7] / silence.
 	// With the multiplexer at X7 and -POTSON low the OS reads the right follower through X7 (right word) and the
 	// left follower in the left word (checked with tests/adc_probe: each bar follows its own channel)
@@ -283,7 +283,7 @@ struct machine_t : public address_space
 				// off): the OS's pot scan also reads the right word at 0x28 and takes it as a control value, so live
 				// audio there would act like a moving slider.  Which signal the hardware presents in that slot is not
 				// known; outside sampling the converter reads silence, as in the proven MAME model without a test input.
-				if (adc_source && (adc_ctrl == 0x08 || adc_ctrl == 0x38)) adc_source(double(boundary) / 10'000'000.0, adc_latch);
+				if (adc_source && (adc_ctrl == 0x08 || adc_ctrl == 0x38)) adc_source(double(boundary) / 10'000'000.0, BIT(adc_ctrl, 4), adc_latch);
 				else adc_latch[0] = adc_latch[1] = 0;
 				if (adc_env && (adc_ctrl & 0x0f) == 0x07) { u16 l, r; adc_env(l, r); adc_latch[0] = s16(-s32(l)); }
 			}

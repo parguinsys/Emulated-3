@@ -158,7 +158,10 @@ private:
 	std::atomic<uint64_t> m_hd_serial{0};
 	uint64_t m_hd_seen[8] = {};              // engine thread: write counts last published
 	int64_t m_hd_dirty_ns[8] = {};
-	void adc_sample(double t, int16_t lr[2]);
+	void adc_sample(double t, bool khz44, int16_t lr[2]);
+	static constexpr int aa_taps = 32, aa_phases = 256;
+	std::vector<float> m_aa[2];              // anti-alias kernels (build_aa), [0] 14.2 kHz, [1] 20 kHz
+	void build_aa();
 	double input_gain() const;               // engine thread, m_rt set
 	double m_env[2] = {};                    // engine thread: input envelope followers L/R (0..1 of full scale)
 	spsc_queue<media_request *> m_media_in{16}, m_media_out{16};   // main -> engine -> main (ownership travels)

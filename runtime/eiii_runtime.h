@@ -87,8 +87,9 @@ public:
 
 	// ---- sampling input ----
 	// The ADC board's analog input: called on the instance's thread at each conversion the OS performs (44 053 or
-	// 33 333 Hz, paced by ADC WAIT), with the conversion time in emulated seconds; returns the L/R ADC words.
-	void set_adc_source(std::function<void(double t_seconds, int16_t lr[2])> source);
+	// 33 333 Hz, paced by ADC WAIT), with the conversion time in emulated seconds and +KHZ44 (the 44 kHz rate and its
+	// anti-alias filter selected); returns the L/R ADC words.
+	void set_adc_source(std::function<void(double t_seconds, bool khz44, int16_t lr[2])> source);
 	// The input envelope followers (L, R), read by the OS's VU meter (SAMPLE 5) with the multiplexer at X7: firmware
 	// ADC units 0..0x7FFF.  Unset: the static X7 value.
 	void set_adc_envelope(std::function<void(uint16_t &left, uint16_t &right)> envelope);
