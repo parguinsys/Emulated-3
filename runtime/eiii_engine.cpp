@@ -222,12 +222,14 @@ void engine::adc_sample(double t, bool khz44, int16_t lr[2])
 	// are in the ring by now; fetch them if this step started before they arrived
 	if (idx + aa_taps / 2 >= double(m_in_end)) drain_input();
 	size_t const frames = m_in_buf.size() / 2;
-	if (frames < 4) return;
+	m_in_conv.fetch_add(1, std::memory_order_relaxed);
+	if (frames < 4) { m_in_missed.fetch_add(1, std::memory_order_relaxed); return; }
 	double const pos = idx - double(m_in_end - frames);
-	if (pos < 0 || pos >= double(frames - 1)) return;
+	if (pos < 0 || pos >= double(frames - 1)) { m_in_missed.fetch_add(1, std::memory_order_relaxed); return; }
 	// the board's anti-alias filter (20 kHz with +KHZ44, else 14.2 kHz) as a windowed-sinc kernel around pos; frames
 	// outside the buffer count as the nearest edge frame
 	int64_t const i0 = int64_t(std::floor(pos)) - aa_taps / 2 + 1;
+	if (i0 < 0 || i0 + aa_taps > int64_t(frames)) m_in_clamped.fetch_add(1, std::memory_order_relaxed);
 	double const ph = (pos - std::floor(pos)) * aa_phases;
 	int const p = std::min(int(ph), aa_phases - 1);
 	double const w = ph - p;
@@ -421,6 +423,7 @@ engine_stats engine::stats() const
 	s.frames_out = m_frames_out; s.underruns = m_underruns; s.first_underrun_at = m_first_underrun_at; s.underrun_frames = m_underrun_frames; s.dropped_frames = m_dropped;
 	s.midi_dropped = m_midi_dropped; s.panel_dropped = m_panel_dropped; s.emu_seconds = m_emu_seconds; s.busy_fraction = m_busy;
 	s.rt_priority = m_rt_priority;
+	s.input_conversions = m_in_conv; s.input_missed = m_in_missed; s.input_clamped = m_in_clamped;
 	return s;
 }
 

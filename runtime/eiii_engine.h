@@ -63,6 +63,7 @@ struct engine_stats
 {
 	uint64_t frames_out = 0, underruns = 0, underrun_frames = 0, first_underrun_at = 0, dropped_frames = 0, midi_dropped = 0, panel_dropped = 0;
 	double emu_seconds = 0, busy_fraction = 0;
+	uint64_t input_conversions = 0, input_missed = 0, input_clamped = 0;   // sampling: conversions, outside the received input, kernel taps past its ends
 	bool rt_priority = false;        // the engine thread got its realtime (SCHED_FIFO) priority
 };
 
@@ -177,6 +178,7 @@ private:
 	std::atomic<uint64_t> m_underruns{0}, m_underrun_frames{0}, m_frames_out{0}, m_dropped{0}, m_midi_dropped{0}, m_panel_dropped{0};
 	std::atomic<double> m_emu_seconds{0}, m_busy{0};
 	std::atomic<bool> m_rt_priority{false};
+	std::atomic<uint64_t> m_in_conv{0}, m_in_missed{0}, m_in_clamped{0};
 	std::vector<float> m_silence;
 };
 
