@@ -191,7 +191,7 @@ def plan(src, keep=None):
         if src.sample_bytes(g) > SND_TOP - SND_BASE or len(set(s for q in g for s in src.preset_samples(q))) > 99:
             print('  skipped preset %d %s: too large for the EIII' % (p, src.preset_name(p)))
             continue
-        trial = cur + g
+        trial = cur + [q for q in g if q not in cur]
         if cur and (src.sample_bytes(trial) > SND_TOP - SND_BASE - 0x100 or
                     len(set(s for q in trial for s in src.preset_samples(q))) > 99):
             parts.append(cur)
@@ -199,13 +199,16 @@ def plan(src, keep=None):
         cur = trial
     if cur:
         parts.append(cur)
-    return parts
+    # a part whose presets only link to presets that did not fit has nothing to play
+    for p in [p for p in parts if not src.sample_bytes(p)]:
+        print('  skipped %d preset(s) without samples: %s' % (len(p), ', '.join(src.preset_name(q) for q in p)))
+    return [p for p in parts if src.sample_bytes(p)]
 
 
 def write_volume(path, files):
     """CD image (EMU3 volume, 256 KB clusters) holding the given (name, id, data) bank files."""
     csize = 0x200                                   # blocks per cluster (cluster code 3, as on E-mu's CDs)
-    fat_lba, fat_n, lbl_lba, lbl_n, dir_lba, dir_n = 2, 5, 7, 2, 9, 0x66
+    fat_lba, fat_n, vol_lba, vol_n, dir_lba, dir_n = 2, 5, 7, 2, 9, 0x66
     data_lba = dir_lba + dir_n
     fat = [0] * (fat_n * BLOCK // 2)
     fat[0] = 0x8000
@@ -213,7 +216,7 @@ def write_volume(path, files):
     for k, (name, num, data) in enumerate(files):
         nb = -(-len(data) // BLOCK)
         nc = -(-nb // csize)
-        if next_c + nc >= len(fat):
+        if next_c + nc >= len(fat) or k >= 7 * BLOCK // 32:
             raise SystemExit('too many banks for one image')
         for c in range(next_c, next_c + nc):
             fat[c] = c + 1
@@ -230,18 +233,24 @@ def write_volume(path, files):
     total += -total % 4                             # whole 2048-byte sectors
     vh = bytearray(BLOCK)
     vh[0:4] = b'EMU3'
-    struct.pack_into('<9I', vh, 4, total, lbl_lba, lbl_n, dir_lba, dir_n, fat_lba, fat_n, data_lba, next_c - 1)
+    struct.pack_into('<9I', vh, 4, total, vol_lba, vol_n, dir_lba, dir_n, fat_lba, fat_n, data_lba, next_c - 1)
     vh[0x28:0x2A] = b'\x03\x01'
     struct.pack_into('<I', vh, 0x2A, total + 0x0B)
     vh[0x32:0x34] = b'\x01\x0d'
     struct.pack_into('<H', vh, 510, sum(struct.unpack_from('<255H', vh)) & 0xFFFF)
-    label = bytearray(lbl_n * BLOCK)
-    label[0:16] = b'EIII Rack import'
+    # block 1: next free directory block, then one byte per directory block (as on E-mu's CDs)
+    used_dir = max(1, -(-len(files) * 32 // BLOCK))
+    alloc = bytearray(b'\x80' * BLOCK)
+    struct.pack_into('<I', alloc, 0, dir_lba + used_dir)
+    # volume records (32 bytes): name shown for the drive, a word 0x4000, then up to 7 directory block numbers
+    vol = bytearray(vol_n * BLOCK)
+    vol[0:16] = b'EIII Rack Import'
+    struct.pack_into('<8H', vol, 16, 0x4000, *[dir_lba + k if k < used_dir else 0xFFFF for k in range(7)])
     with open(path, 'wb') as f:
         f.write(vh)
-        f.write(bytes(BLOCK))
+        f.write(alloc)
         f.write(struct.pack('<%dH' % len(fat), *fat))
-        f.write(label)
+        f.write(vol)
         f.write(entries)
         for data, c in placed:
             f.seek((data_lba + (c - 1) * csize) * BLOCK)
