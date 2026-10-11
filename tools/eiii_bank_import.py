@@ -159,7 +159,11 @@ def eiii_bank_file(src, name, number, keep):
                                      '02000500556e00000080ffff000000fe'
                                      'ffff280002000500556e000000800000')
     ram[0:16] = name
-    struct.pack_into('<II', ram, 0x10, min(keep), 1)              # selected preset; +0x14 as in factory banks
+    # start on the first preset that plays (ESI banks keep an empty "Untitled Preset" at 0): selected preset, and
+    # the MIDI channel -> preset map at 0x1A686
+    first = min((p for p in keep if src.preset_samples(p)), default=min(keep))
+    struct.pack_into('<II', ram, 0x10, first, 1)                  # +0x14 as in factory banks
+    ram[0x686:0x696] = bytes([first]) * 16
     struct.pack_into('<101I', ram, 0x20, *pptr)
     struct.pack_into('<100I', ram, 0x1B4, *sptr)
     struct.pack_into('<II', ram, 0x344, SND_BASE + len(snd), SND_TOP)  # sample memory used / top
