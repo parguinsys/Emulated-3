@@ -103,6 +103,8 @@ public:
 	// ---- diagnostics (tests): read emulated memory as the CPU sees it, no side effects on RAM / sample RAM ----
 	uint16_t debug_read16(uint32_t address) const;
 	uint32_t debug_read32(uint32_t address) const;   // little-endian, as the NS32016
+	// ADC board word reads since power-on, per value of the control latch (0x360000): left = 0x368000, right = 0x368002
+	void debug_adc_reads(uint64_t left[256], uint64_t right[256]) const;
 
 	// ---- media (SCSI ID 3 CD-ROM drive) ----
 	// A disc change as on the real drive: the next command after a mount reports UNIT ATTENTION (new medium), an empty

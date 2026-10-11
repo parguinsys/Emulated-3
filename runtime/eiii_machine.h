@@ -93,6 +93,7 @@ struct machine_t : public address_space
 	s16 adc_latch[2] = {0, 0};
 	u16 adc_pot[8] = {0x3800, 0x0000, 0x31f1, 0x0001, 0x73cc, 0x708d, 0x2909, 0x0000};
 	unsigned long long adc_pot_reads[8] = {};
+	unsigned long long adc_left_reads[256] = {}, adc_right_reads[256] = {};   // per control-latch value (diagnostics)
 	// host audio input: (conversion time in emulated seconds) -> L/R ADC words; unset = silence
 	std::function<void(double, s16 *)> adc_source;   // right-word reads per multiplexer input with -POTSON active (statistics)
 	FILE *log = nullptr;
@@ -268,6 +269,7 @@ struct machine_t : public address_space
 			unsigned const off = (a - 0x368000) >> 1;
 			if (!(off & 1))
 			{
+				++adc_left_reads[adc_ctrl];
 				u64 const period = BIT(adc_ctrl, 4) ? 227 : 300;
 				u64 const c = cpu->total_cycles();
 				u64 const boundary = (c / period + 1) * period;
@@ -282,6 +284,7 @@ struct machine_t : public address_space
 			}
 			if (off & 1)
 			{
+				++adc_right_reads[adc_ctrl];
 				if (!BIT(adc_ctrl, 3)) { ++adc_pot_reads[adc_ctrl & 7]; return u16(-s32(adc_pot[adc_ctrl & 7])); }
 				return u16(adc_latch[1]);
 			}

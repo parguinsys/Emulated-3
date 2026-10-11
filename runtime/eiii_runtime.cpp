@@ -319,6 +319,10 @@ uint16_t runtime::debug_read16(uint32_t a) const
 	return 0;
 }
 uint32_t runtime::debug_read32(uint32_t a) const { return uint32_t(debug_read16(a)) | (uint32_t(debug_read16(a + 2)) << 16); }
+void runtime::debug_adc_reads(uint64_t left[256], uint64_t right[256]) const
+{
+	for (unsigned i = 0; i < 256; ++i) { left[i] = m->m.adc_left_reads[i]; right[i] = m->m.adc_right_reads[i]; }
+}
 
 uint64_t runtime::cycles() const { return m->cpu ? uint64_t(m->cpu->total_cycles()) : 0; }
 double runtime::seconds() const { return double(cycles()) / cpu_hz; }
