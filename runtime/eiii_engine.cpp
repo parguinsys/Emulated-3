@@ -193,7 +193,7 @@ void engine::drain_input()
 		}
 	}
 	uint64_t const base = m_in_end - m_in_buf.size() / 2;
-	int64_t const cur = int64_t(m_emu_frames) - m_ring_to_emu - int64_t(m_latency) - 64;   // input index now in use
+	int64_t const cur = int64_t(m_emu_frames) - m_ring_to_emu - int64_t(m_latency) - aa_taps / 2 - 64;   // input index now in use
 	if (!m_rt) { m_in_buf.clear(); return; }
 	if (cur > int64_t(base))
 	{
@@ -215,7 +215,9 @@ void engine::adc_sample(double t, bool khz44, int16_t lr[2])
 {
 	lr[0] = lr[1] = 0;
 	if (!m_rt) return;
-	double const idx = t * m_cfg.rt.sample_rate - double(m_ring_to_emu) - double(m_latency);   // input index
+	// input index; aa_taps / 2 frames later than the frame being emulated, so the filter kernel's look-ahead is already
+	// there (the audio thread hands over a block's input only just before it pulls that block)
+	double const idx = t * m_cfg.rt.sample_rate - double(m_ring_to_emu) - double(m_latency) - aa_taps / 2;
 	// the audio thread hands over each block's input before it pulls that block, so frames the emulation may reach
 	// are in the ring by now; fetch them if this step started before they arrived
 	if (idx + aa_taps / 2 >= double(m_in_end)) drain_input();
