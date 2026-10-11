@@ -98,7 +98,7 @@ struct machine_t : public address_space
 	std::function<void(double, s16 *)> adc_source;
 	// the input envelope followers (the OS's SAMPLE 5 VU meter), firmware ADC units; unset = adc_pot[7] / silence.
 	// With the multiplexer at X7 and -POTSON low the OS reads the right follower through X7 (right word) and the
-	// left follower in the left word (the R bar follows X7; the L bar is assumed to read the left word, see adc_probe)
+	// left follower in the left word (checked with tests/adc_probe: each bar follows its own channel)
 	std::function<void(u16 &left, u16 &right)> adc_env;   // right-word reads per multiplexer input with -POTSON active (statistics)
 	FILE *log = nullptr;
 	unsigned long long unmapped = 0, ncr_logged = 0;
