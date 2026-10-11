@@ -74,11 +74,13 @@ int main()
 	CHECK(read_sample(t, 1, 44053, s) && s.name.compare(0, 15, "Untitled Sample") == 0, "S01 in sample RAM at %06X: \"%s\"", s.ptr, s.name.c_str());
 	CHECK(s.rate == 44053, "rate %u Hz (10 MHz / 227)", s.rate);
 	CHECK((s.flags & 0x60) == 0x60, "stereo (flags 0x%02X)", s.flags);
-	// tone analysis on one second of the left channel: rising zero crossings -> period; peak; continuity
+	// tone analysis on one second of the left channel: rising zero crossings -> period; peak; continuity.  The first
+	// 1024 words are left out: they hold the tone's abrupt onset (word ~250), where the input's anti-alias filter
+	// rings around zero for a few words before it, like any band limit applied to a step.
 	std::vector<double> cross;
 	int peak = 0;
 	double max_step = 0;
-	for (size_t i = 1; i < s.left.size(); ++i)
+	for (size_t i = 1024; i < s.left.size(); ++i)
 	{
 		if (s.left[i - 1] < 0 && s.left[i] >= 0) cross.push_back(double(i - 1) + double(-s.left[i - 1]) / double(s.left[i] - s.left[i - 1]));
 		peak = std::max(peak, std::abs(int(s.left[i])));
