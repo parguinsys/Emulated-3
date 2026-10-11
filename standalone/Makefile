@@ -127,6 +127,29 @@ release:
 	cp README.md dist/README.md
 	cd dist && sha256sum eiii-standalone README.md > SHA256SUMS
 	@ls -la dist; echo "release binary: $(CURDIR)/dist/eiii-standalone"
+# Raspberry Pi 400 / Pi 4 / Pi 5 (64-bit Raspberry Pi OS bookworm or newer): stripped standalone for Cortex-A72, built
+# natively on the Pi or cross-built on x86-64 Linux (clang + lld against the sysroot tools/pi_sysroot.sh fetches once).
+#   -> dist/Emulated-3-v$(VERSION)-linux-arm64-pi.tar.gz
+PI_SYSROOT ?= $(HOME)/.cache/eiii/pi-sysroot
+PI_OPT      = -O2 -DNDEBUG -mcpu=cortex-a72
+PI_PKG      = Emulated-3-v$(VERSION)-linux-arm64-pi
+pi:
+ifeq ($(shell uname -m),aarch64)
+	$(MAKE) BUILD=build/pi OPT="$(PI_OPT)" LDFLAGS="-static-libstdc++ -static-libgcc" OUT=build/pi/eiii-standalone build/pi/eiii-standalone
+	strip -o build/pi/eiii-standalone.stripped build/pi/eiii-standalone
+else
+	../tools/pi_sysroot.sh $(PI_SYSROOT)
+	$(MAKE) BUILD=build/pi OPT="$(PI_OPT)" CXX="clang++ --target=aarch64-linux-gnu --sysroot=$(PI_SYSROOT)" \
+	        CC="clang --target=aarch64-linux-gnu --sysroot=$(PI_SYSROOT)" LDFLAGS="-fuse-ld=lld -static-libstdc++ -static-libgcc" \
+	        OUT=build/pi/eiii-standalone build/pi/eiii-standalone
+	llvm-strip -o build/pi/eiii-standalone.stripped build/pi/eiii-standalone
+endif
+	rm -rf dist/$(PI_PKG); mkdir -p dist/$(PI_PKG)
+	cp build/pi/eiii-standalone.stripped dist/$(PI_PKG)/eiii-standalone
+	cp README.md dist/$(PI_PKG)/README.md; cp ../LICENSE dist/$(PI_PKG)/
+	cd dist && tar czf $(PI_PKG).tar.gz $(PI_PKG) && sha256sum $(PI_PKG).tar.gz > $(PI_PKG).tar.gz.sha256
+	@echo "Raspberry Pi build: $(CURDIR)/dist/$(PI_PKG).tar.gz"
+
 # Release archive: CLAP plugin + standalone (C++ runtime linked statically: needs glibc >= 2.38, libX11, libXext,
 # libasound), docs, licences.  -> dist/Emulated-3-v$(VERSION)-linux-x86_64.tar.gz
 VERSION  ?= 0.1.0-beta
@@ -184,4 +207,4 @@ clean:
 	rm -rf build eiii-standalone
 distclean: clean
 	rm -rf dist
-.PHONY: eiii-standalone release package debug asan check clean distclean plugin
+.PHONY: eiii-standalone release pi package debug asan check clean distclean plugin
