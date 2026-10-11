@@ -19,7 +19,6 @@
 #include <poll.h>
 #include <string>
 #include <termios.h>
-#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -134,17 +133,19 @@ int main(int argc, char **argv)
 	bool connected = false, running = false;
 	clk::time_point t0;
 	auto tick = clk::now();
+	auto receive = [&]() {
+		for (;;)
+		{
+			uint8_t buf[65536];
+			ssize_t const n = read(fd, buf, sizeof buf);
+			if (n <= 0) break;
+			rd.push(buf, size_t(n), s); connected = true;
+		}
+	};
 	while (!g_stop)
 	{
 		tick += std::chrono::milliseconds(1);
-		// receive
-		for (;;)
-		{
-			uint8_t buf[8192];
-			ssize_t const n = read(fd, buf, sizeof buf);
-			if (n > 0) { rd.push(buf, size_t(n), s); connected = true; continue; }
-			break;
-		}
+		receive();
 		// the codec clock: once the buffer is half full, play 96 frames per millisecond; an empty buffer when frames are
 		// due is an underrun
 		if (!running && s.frames >= capacity / 2) { running = true; t0 = clk::now(); }
@@ -168,7 +169,16 @@ int main(int argc, char **argv)
 		if (connected && keep >= 0) { close(keep); keep = -1; }
 		pollfd p{ fd, POLLIN, 0 };
 		if (connected && poll(&p, 1, 0) > 0 && (p.revents & POLLHUP)) break;
-		std::this_thread::sleep_until(tick);
+		// keep reading until the next tick: a pty holds only a few kB, so reading once per millisecond would throttle the
+		// host below the 3 MB/s the lanes need
+		while (!g_stop)
+		{
+			auto const left = tick - clk::now();
+			if (left <= clk::duration::zero()) break;
+			timespec ts{ 0, long(std::chrono::duration_cast<std::chrono::nanoseconds>(left).count()) };
+			pollfd p{ fd, POLLIN, 0 };
+			if (ppoll(&p, 1, &ts, nullptr) > 0) { if (p.revents & POLLHUP) break; receive(); }
+		}
 	}
 	unlink(link.c_str());
 	if (s.wav) finish_wav(s.wav, s.wav_frames);
