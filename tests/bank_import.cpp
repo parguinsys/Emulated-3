@@ -1,5 +1,6 @@
 // Banks converted from EIIIX / ESI-32 discs (runtime/eiii_bank_import, as the plugin does on mount, or
 // tools/eiii_bank_import.py) load and play through the original OS.
+// EIII_IMPORT_BANKS entries may name the bank instead of its number when the disc is converted here.
 // EIII_IMPORT_CD: an EIIIX / ESI-32 disc (converted here first, to EIII_IMPORT_OUT or /tmp) or an already converted
 // image, mounted as D3.  EIII_IMPORT_BANKS: "NN:Preset name,NN:Preset name,..." -
 // each bank number is loaded with Load Bank, its selected preset must be shown on the main screen (an empty name:
@@ -50,10 +51,11 @@ int main()
 	std::string const cd = env("EIII_IMPORT_CD"), banks = env("EIII_IMPORT_BANKS");
 	if (cfg.rt.hd_path.empty() || cd.empty() || banks.empty()) { printf("SKIP: set EIII_ROM_DIR, EIII_HD, EIII_IMPORT_CD, EIII_IMPORT_BANKS\n"); return 77; }
 	cfg.rt.cd_path = cd;
+	std::string summary;                                  // "Bnn <bank name>" lines of the conversion
 	if (eiii::bank_import::needs_conversion(cd))
 	{
 		std::string const out = env("EIII_IMPORT_OUT", "/tmp/eiii_bank_import_test.iso");
-		std::string summary, err;
+		std::string err;
 		bool const ok = eiii::bank_import::convert(cd, out, summary, err);
 		CHECK(ok, "converted %s -> %s %s", cd.c_str(), out.c_str(), err.c_str());
 		printf("%s", summary.c_str());
@@ -68,7 +70,12 @@ int main()
 	for (std::string item; std::getline(ss, item, ',');)
 	{
 		auto const colon = item.find(':');
-		std::string const num = item.substr(0, colon), preset = item.substr(colon + 1);
+		std::string num = item.substr(0, colon), preset = item.substr(colon + 1);
+		if (num.size() != 2 || !isdigit((unsigned char)num[0]))         // a bank name: its number from the conversion
+		{
+			auto const at = summary.find(" " + num);
+			num = at != std::string::npos && at >= 3 && summary[at - 3] == 'B' ? summary.substr(at - 2, 2) : "??";
+		}
 		bool const ok = load(t, num, preset);
 		CHECK(ok, "Load Bank %s from the converted disc shows \"%s\"", num.c_str(), preset.c_str());
 		if (!ok) continue;
