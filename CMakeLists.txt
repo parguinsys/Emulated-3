@@ -58,7 +58,7 @@ set_source_files_properties(${mame_src} standalone/eiii_scsi.cpp PROPERTIES COMP
 add_library(eiii_runtime STATIC
 	standalone/shim/emu_shim.cpp standalone/eiii_scsi.cpp standalone/diserial_shim.cpp
 	fchip/eiii_fchip.cpp cem/eiii_cem3387.cpp cem/eiii_cem_calibration.cpp cem/eiii_cem_cv_conditioning.cpp
-	cem/eiii_cem3387_v2.cpp host/eiii_backend.cpp runtime/eiii_runtime.cpp runtime/eiii_engine.cpp runtime/eiii_bank_import.cpp
+	cem/eiii_cem3387_v2.cpp host/eiii_backend.cpp host/eiii_board_link.cpp runtime/eiii_runtime.cpp runtime/eiii_engine.cpp runtime/eiii_bank_import.cpp
 	panel/eiii_lcd.cpp panel/eiii_panel_model.cpp panel/eiii_panel_adapter.cpp
 	${mame_src})
 target_include_directories(eiii_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}

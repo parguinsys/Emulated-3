@@ -1,11 +1,13 @@
 // The fork boundary: everything the authentic core emits towards the output hardware.
 // Events carry core time in 20 MHz ticks (F-Chip clock; = 2 x 10 MHz CPU cycles) and must arrive in time order.
-// software_backend = F-Chip lanes + CEM3387 model; a Teensy bridge implements the same interface over USB.
+// software_backend = F-Chip lanes + CEM3387 model, or (use_board) F-Chip lanes sent to the analog voice board, whose
+// Teensy drives real CEM3387s (eiii_board_link.h).
 #pragma once
 #include "../fchip/eiii_fchip.h"
 #include "../cem/eiii_cem3387.h"
 #include "../cem/eiii_cem3387_v2.h"
 #include "eiii_decimator.h"
+#include "eiii_board_link.h"
 #include <memory>
 #include <cstdint>
 #include <vector>
@@ -23,6 +25,14 @@ public:
 	virtual void render_until(uint64_t t20) = 0;                                            // produce audio up to t20
 };
 
+// receives the encoded BLOCK packets in board mode (blocks while the board's buffer is full: that paces the emulation)
+class board_sink
+{
+public:
+	virtual ~board_sink() = default;
+	virtual void send(uint8_t const *data, size_t n) = 0;
+};
+
 class software_backend : public output_backend
 {
 public:
@@ -31,7 +41,11 @@ public:
 	// CEM3387_MODEL_V2 (evidence-refined section model + external network, FIR decimation); V1 stays the default.
 	// Must be called before rendering starts.
 	void use_model_v2(cem_calibration const &cal, unsigned oversample = 4, cem_v2_options const &o = {});
-	char const *model_name() const { return m_v2 ? "CEM3387_MODEL_V2" : "CEM3387_MODEL_V1"; }
+	// Board mode: from now on the lanes are sampled at the board's 96 kHz and sent with the CV words to `sink` instead of
+	// the CEM3387 model; audio() then receives silence at the output rate (the sound leaves through the board).
+	// Must be called before rendering starts.
+	void use_board(board_sink *sink);
+	char const *model_name() const { return m_board ? "analog board" : m_v2 ? "CEM3387_MODEL_V2" : "CEM3387_MODEL_V1"; }
 	fchip_bank &lanes() { return m_fc; }
 
 	void rf_write(uint64_t t20, unsigned voice, unsigned slot, uint32_t value) override;
@@ -52,6 +66,10 @@ private:
 	std::unique_ptr<cem3387_v2_bank> m_cem2;
 	fir_decimator m_dec;
 	bool m_v2 = false;
+	board_sink *m_board = nullptr;
+	board::block_writer m_block;
+	std::vector<uint8_t> m_packet;
+	double m_out_step = 0, m_out_next = 0;
 	double m_rate, m_fs;
 	unsigned m_os;
 	uint64_t m_now = 0;

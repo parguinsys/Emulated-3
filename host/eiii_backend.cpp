@@ -1,4 +1,5 @@
 #include "eiii_backend.h"
+#include <cmath>
 
 namespace eiii {
 
@@ -27,9 +28,42 @@ void software_backend::use_model_v2(cem_calibration const &cal, unsigned oversam
 	m_cem2->reset();
 }
 
+void software_backend::use_board(board_sink *sink)
+{
+	m_board = sink;
+	m_fs = board::frame_rate;
+	// output samples per board frame: exact for 48 / 96 kHz hosts, fractional otherwise
+	double const ratio = board::frame_rate / m_rate;
+	m_os = ratio == std::floor(ratio) ? unsigned(ratio) : 0;
+	m_k = 0;
+	m_out_step = 20e6 / m_rate;
+	m_out_next = 0;
+	m_block.reset(0);
+	// the board starts from the CV state the firmware may already have written
+	for (unsigned v = 0; v < 16; ++v)
+		for (unsigned b = 0; b < 5; ++b) m_block.cv(v, b, m_cv[v][b]);
+}
+
 void software_backend::render_until(uint64_t t20)
 {
 	double const step = 20e6 / m_fs;
+	if (m_board)
+	{
+		while (m_next < double(t20))
+		{
+			advance_to(uint64_t(m_next));
+			int16_t pcm[16];
+			for (unsigned v = 0; v < 16; ++v) pcm[v] = m_fc.pcm(v);
+			m_block.frame(pcm);
+			if (m_block.full()) { m_block.finish(m_packet); m_board->send(m_packet.data(), m_packet.size()); }
+			// silence at the output rate, emitted on the same steps as the CEM model's output (after every m_os steps)
+			if (m_os) { if (++m_k == m_os) { m_out.push_back(0.0f); m_out.push_back(0.0f); m_k = 0; } }
+			else for (m_out_next += step; m_out_next >= m_out_step; m_out_next -= m_out_step) { m_out.push_back(0.0f); m_out.push_back(0.0f); }
+			m_next += step;
+		}
+		advance_to(t20);
+		return;
+	}
 	if (m_v2)
 	{
 		while (m_next < double(t20))
@@ -72,7 +106,12 @@ void software_backend::cv_write(uint64_t t20, unsigned bank, unsigned channel, u
 	render_until(t20);
 	if (bank < 5 && channel < 16)
 	{
-		if (m_v2) m_cem2->cv_write(bank, channel, word); else m_cem.cv_write(bank, channel, word);
+		if (m_board)
+		{
+			m_block.cv(15 - channel, bank, word);
+			if (m_block.full()) { m_block.finish(m_packet); m_board->send(m_packet.data(), m_packet.size()); }
+		}
+		else if (m_v2) m_cem2->cv_write(bank, channel, word); else m_cem.cv_write(bank, channel, word);
 		m_cv[15 - channel][bank] = word;
 	}
 }

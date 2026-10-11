@@ -25,9 +25,9 @@ SFDIR     = $(MAME)/3rdparty/softfloat3
 SFDEFS    = -DSOFTFLOAT_ROUND_ODD -DINLINE_LEVEL=5 -DSOFTFLOAT_FAST_DIV32TO16 -DSOFTFLOAT_FAST_DIV64TO32 -DSOFTFLOAT_FAST_INT64 -DLITTLEENDIAN=1
 SFINC     = -I$(MAME)/src/osd -I$(SFDIR)/build/MAME -I$(SFDIR)/source -I$(SFDIR)/source/include -I$(SFDIR)/source/8086 -I$(SFDIR)/bochs_ext
 
-SRC_HOST  = eiii_host.cpp eiii_gui.cpp host_io.cpp shim/emu_shim.cpp eiii_scsi.cpp diserial_shim.cpp
+SRC_HOST  = eiii_host.cpp eiii_gui.cpp host_io.cpp board_io.cpp shim/emu_shim.cpp eiii_scsi.cpp diserial_shim.cpp
 SRC_CORE  = ../fchip/eiii_fchip.cpp ../cem/eiii_cem3387.cpp ../cem/eiii_cem_calibration.cpp ../cem/eiii_cem_cv_conditioning.cpp \
-            ../cem/eiii_cem3387_v2.cpp ../host/eiii_backend.cpp ../runtime/eiii_runtime.cpp ../runtime/eiii_engine.cpp ../runtime/eiii_bank_import.cpp \
+            ../cem/eiii_cem3387_v2.cpp ../host/eiii_backend.cpp ../host/eiii_board_link.cpp ../runtime/eiii_runtime.cpp ../runtime/eiii_engine.cpp ../runtime/eiii_bank_import.cpp \
             ../panel/eiii_lcd.cpp ../panel/eiii_panel_model.cpp ../panel/eiii_panel_adapter.cpp
 # UI layer (software renderer, panel artwork) — linked by the GUI/plugin/tools only
 SRC_UI    = ../ui/raster.cpp ../ui/panel_view.cpp ../ui/panel_menu.cpp ../ui/x11_window.cpp ../ui/panel_window.cpp
@@ -49,7 +49,7 @@ eiii-standalone: $(BUILD)/eiii-standalone
 
 # everything except the standalone's main and its ALSA I/O: the runtime library shared by the standalone, the tests and
 # the plugin (which therefore does not link libasound)
-HOST_ONLY = $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o $(BUILD)/obj/host_io.o
+HOST_ONLY = $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o $(BUILD)/obj/host_io.o $(BUILD)/obj/board_io.o
 LIB_OBJS  = $(filter-out $(HOST_ONLY),$(OBJ))
 $(BUILD)/libeiiiruntime.a: $(LIB_OBJS)
 	rm -f $@; ar rcs $@ $^
