@@ -74,11 +74,13 @@ int main()
 	CHECK(read_sample(t, 1, 44053, s) && s.name.compare(0, 15, "Untitled Sample") == 0, "S01 in sample RAM at %06X: \"%s\"", s.ptr, s.name.c_str());
 	CHECK(s.rate == 44053, "rate %u Hz (10 MHz / 227)", s.rate);
 	CHECK((s.flags & 0x60) == 0x60, "stereo (flags 0x%02X)", s.flags);
-	// tone analysis on one second of the left channel: rising zero crossings -> period; peak; continuity
+	// tone analysis on one second of the left channel: rising zero crossings -> period; peak; continuity.  The first
+	// 1024 words are left out: they hold the tone's abrupt onset (word ~250), where the input's anti-alias filter
+	// rings around zero for a few words before it, like any band limit applied to a step.
 	std::vector<double> cross;
 	int peak = 0;
 	double max_step = 0;
-	for (size_t i = 1; i < s.left.size(); ++i)
+	for (size_t i = 1024; i < s.left.size(); ++i)
 	{
 		if (s.left[i - 1] < 0 && s.left[i] >= 0) cross.push_back(double(i - 1) + double(-s.left[i - 1]) / double(s.left[i] - s.left[i - 1]));
 		peak = std::max(peak, std::abs(int(s.left[i])));
@@ -89,6 +91,22 @@ int main()
 	CHECK(peak > 15800 && peak < 16800, "level at the default Sample Input position: peak %d (0.5 FS -> ~16384)", peak);
 	// a sine of amplitude 16384 at 1000/44053 cycles per word changes by at most 2*pi*16384/44.05 = 2337 per word
 	CHECK(max_step < 2450, "continuous: largest step between words %.0f", max_step);
+	{
+		// diagnostics: conversions outside the received input / with the filter kernel past its ends; the largest
+		// steps and where the zero-crossing spacing departs from the tone's period
+		auto const st = t.e.stats();
+		printf("  input conversions %llu, missed %llu, kernel clamped %llu\n", (unsigned long long)st.input_conversions,
+			(unsigned long long)st.input_missed, (unsigned long long)st.input_clamped);
+		int shown = 0;
+		for (size_t i = 2; i < cross.size() && shown < 8; ++i)
+		{
+			double const d = cross[i] - cross[i - 1];
+			if (std::fabs(d - 44.053) > 2.0) { printf("  crossing spacing %.2f at word %.0f\n", d, cross[i]); ++shown; }
+		}
+		shown = 0;
+		for (size_t i = 1; i < s.left.size() && shown < 8; ++i)
+			if (std::fabs(double(s.left[i]) - s.left[i - 1]) > 2340) { printf("  step %d at word %zu (%d -> %d)\n", s.left[i] - s.left[i - 1], i, s.left[i - 1], s.left[i]); ++shown; }
+	}
 
 	// Sample Input level: slider at the top = +20 dB (the 0.5 FS tone clips), at the bottom = silent (never triggers)
 	int const slider = eiii::panel_find_control("sample_input");

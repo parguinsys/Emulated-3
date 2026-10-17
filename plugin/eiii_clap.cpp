@@ -12,6 +12,7 @@
 // Audio: stereo Main Out; stereo Sample In feeds the ADC board (sampling through the original OS, level = the
 // panel's Sample Input slider).
 //   cem_model = v1|v2              autoload_bank = 44   autoload_drive = 3   autoload_preset = 1   (optional)
+//   latency_margin = 256           frames at 48 kHz kept ready beyond one host block (optional; also EIII_LATENCY_MARGIN)
 // These are the defaults of a new instance; the media in use are saved in the CLAP state, so a project reopens with
 // its disks.  The menu bar above the panel shows the drives (D1 OS hard disk, D3 CD-ROM, extra drives D4..D7) and
 // changes them at runtime: a disc into / out of a CD drive is a hot swap (the OS sees a disc change); any other change
@@ -19,7 +20,9 @@
 // choosers are a separate process (zenity or kdialog, or the program named by EIII_RACK_PICKER: called as
 // "PICKER cd|hd|rom START" and printing the chosen path) so no plugin thread ever waits for one.
 #include "clap/clap.h"
+#include "plugin/eiii_clap_entry.h"
 #include "panel/eiii_panel_adapter.h"
+#include "runtime/eiii_bank_import.h"
 #include "runtime/eiii_engine.h"
 #include "standalone/ui_macro.h"
 #include "ui/panel_window.h"
@@ -33,6 +36,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <spawn.h>
 #include <string>
@@ -68,6 +72,7 @@ struct media_config
 	std::string cd_last_dir;        // where the CD chooser opens when the drive is empty
 	std::string hd_changes[8];      // hard disk change sets from the project, used when the engine starts
 	int autoload_bank = -1, autoload_drive = 3, autoload_preset = -1;
+	unsigned latency_margin = 0;    // 0 = the engine's default
 	std::string &hd() { return scsi[1].path; }
 	std::string &cd() { return scsi[3].path; }
 	media_config() { scsi[1].kind = eiii::scsi_kind::hd; scsi[3].kind = eiii::scsi_kind::cd; }
@@ -110,6 +115,7 @@ media_config read_media_config()
 			}
 			else if (k == "autoload_bank") m.autoload_bank = atoi(v.c_str()); else if (k == "autoload_drive") m.autoload_drive = atoi(v.c_str());
 			else if (k == "autoload_preset") m.autoload_preset = atoi(v.c_str());
+			else if (k == "latency_margin") m.latency_margin = unsigned(std::max(0, atoi(v.c_str())));
 		}
 	}
 	auto env = [](char const *k, std::string &v) { if (char const *e = getenv(k)) v = e; };
@@ -117,6 +123,7 @@ media_config read_media_config()
 	if (char const *e = getenv("EIII_AUTOLOAD_BANK")) m.autoload_bank = atoi(e);
 	if (char const *e = getenv("EIII_AUTOLOAD_DRIVE")) m.autoload_drive = atoi(e);
 	if (char const *e = getenv("EIII_AUTOLOAD_PRESET")) m.autoload_preset = atoi(e);
+	if (char const *e = getenv("EIII_LATENCY_MARGIN")) m.latency_margin = unsigned(std::max(0, atoi(e)));
 	// nothing configured: the default folders (XDG data dir)
 	std::string const data = default_media_dir();
 	auto first = [](std::string const &dir, std::vector<std::string> const &exts) {
@@ -344,6 +351,14 @@ struct instance
 	std::thread export_thread;       // "save hard disk with its changes as": copies the image, off the plugin's threads
 	std::atomic<bool> export_done{false};
 	std::string export_result;
+	// EIIIX / ESI-32 discs: converted (once, cached) to an EIII disc off the plugin's threads, then mounted
+	std::thread convert_thread;
+	std::atomic<bool> convert_done{false}, convert_cancel{false};
+	bool convert_ok = false;
+	unsigned convert_id = 0;
+	std::string convert_src, convert_dst, convert_result;
+	std::map<std::string, std::string> converted_from;   // converted copy -> the disc the user chose
+	std::vector<std::pair<unsigned, std::string>> convert_queue;
 	std::chrono::steady_clock::time_point media_msg_until;
 
 	static instance *of(clap_plugin_t const *p) { return static_cast<instance *>(p->plugin_data); }
@@ -398,7 +413,41 @@ struct instance
 	// [main-thread] requests (validated and applied by the engine; outcome in poll_media())
 	void change_scsi(unsigned id, eiii::scsi_kind kind, std::string const &path)
 	{
-		if (!eng.set_scsi(id, kind, path)) show_media_message("busy: try again");
+		std::string mount = path;
+		if (kind == eiii::scsi_kind::cd && !path.empty() && eiii::bank_import::needs_conversion(path))
+		{
+			mount = converted_copy(path);
+			if (mount.empty()) { start_conversion(id, path); return; }
+		}
+		if (!eng.set_scsi(id, kind, mount)) show_media_message("busy: try again");
+	}
+	static std::string convert_dir() { std::string const d = default_media_dir(); return d.empty() ? d : d + "/converted"; }
+	// the up-to-date converted copy of an EIIIX / ESI-32 disc, or "" if it has to be made first
+	std::string converted_copy(std::string const &src)
+	{
+		std::string const dst = eiii::bank_import::cached_path(src, convert_dir());
+		if (convert_dir().empty() || !eiii::bank_import::cache_fresh(src, dst)) return {};
+		converted_from[dst] = src;
+		return dst;
+	}
+	void start_conversion(unsigned id, std::string const &src)
+	{
+		if (convert_thread.joinable()) { convert_queue.emplace_back(id, src); return; }
+		if (convert_dir().empty()) { show_media_message("no folder for converted discs (HOME not set)"); return; }
+		convert_id = id; convert_src = src; convert_dst = eiii::bank_import::cached_path(src, convert_dir());
+		convert_done = false; convert_cancel = false;
+		show_media_message("converting " + disc_name(src) + " for the EIII\xE2\x80\xA6");
+		media_msg_until = std::chrono::steady_clock::now() + std::chrono::hours(1);
+		convert_thread = std::thread([this] {
+			std::string summary, err;
+			mkdir(default_media_dir().c_str(), 0755); mkdir(convert_dir().c_str(), 0755);
+			convert_ok = eiii::bank_import::convert(convert_src, convert_dst, summary, err, &convert_cancel);
+			if (convert_ok) fprintf(stderr, "EIII Rack: %s -> %s\n%s", convert_src.c_str(), convert_dst.c_str(), summary.c_str());
+			size_t banks = 0;
+			for (size_t i = 0; i < summary.size(); i = summary.find('\n', i) + 1) { banks += summary[i] == 'B'; if (summary.find('\n', i) == std::string::npos) break; }
+			convert_result = convert_ok ? "converted " + disc_name(convert_src) + ": " + std::to_string(banks) + " banks" : err;
+			convert_done = true;
+		});
 	}
 	void change_setting(eiii::media_slot sl, std::string const &value)
 	{
@@ -417,7 +466,8 @@ struct instance
 				eiii::scsi_target &t = media.scsi[r.scsi_id];
 				if (t.kind == eiii::scsi_kind::cd && !t.path.empty()) media.cd_last_dir = dir_name(t.path);
 				if (t.kind != r.kind) { t.kind = r.kind; changed = true; }
-				set(t.path, r.kind == eiii::scsi_kind::none ? std::string() : r.path);
+				auto const orig = converted_from.find(r.path);         // a converted disc is kept as the one the user chose
+				set(t.path, r.kind == eiii::scsi_kind::none ? std::string() : orig != converted_from.end() ? orig->second : r.path);
 			}
 			else if (r.slot == eiii::media_slot::rom) set(media.rom_dir, r.path);
 			else if (r.slot == eiii::media_slot::cem_model) set(media.cem_model, r.path);
@@ -436,6 +486,13 @@ struct instance
 			else change_scsi(pick_id, what == "cd" ? eiii::scsi_kind::cd : eiii::scsi_kind::hd, choice);
 		}
 		if (export_thread.joinable() && export_done) { export_thread.join(); show_media_message(export_result); }
+		if (convert_thread.joinable() && convert_done)
+		{
+			convert_thread.join();
+			show_media_message(convert_result);
+			if (convert_ok) { converted_from[convert_dst] = convert_src; if (!eng.set_scsi(convert_id, eiii::scsi_kind::cd, convert_dst)) show_media_message("busy: try again"); }
+			if (!convert_queue.empty()) { auto const [id, src] = convert_queue.front(); convert_queue.erase(convert_queue.begin()); change_scsi(id, eiii::scsi_kind::cd, src); }
+		}
 		if (eng.hd_changes_serial() != hd_serial) { hd_serial = eng.hd_changes_serial(); dirty(); }
 		if (std::string const w = eng.take_warning(); !w.empty()) show_media_message(w);
 		update_menu_status();
@@ -576,14 +633,16 @@ struct instance
 };
 
 // ---------------------------------------------------------------------------------------------- extensions
-// Main Out, and Sample In: the ADC board's line inputs (what the original OS records with Sample -> Arm Sampling)
+// Main Out, and Sample In: the ADC board's line inputs (what the original OS records with Sample -> Arm Sampling).
+// Sample In is the main input so hosts feed it the track's own channels: as a non-main (sidechain) port REAPER only
+// fed it from channels 3/4, and Qtractor not at all.
 uint32_t audio_ports_count(clap_plugin_t const *, bool) { return 1; }
 bool audio_ports_get(clap_plugin_t const *, uint32_t index, bool is_input, clap_audio_port_info_t *info)
 {
 	if (index != 0) return false;
 	info->id = is_input ? 1 : 0;
 	snprintf(info->name, sizeof info->name, "%s", is_input ? "Sample In" : "Main Out");
-	info->flags = is_input ? 0 : CLAP_AUDIO_PORT_IS_MAIN;
+	info->flags = CLAP_AUDIO_PORT_IS_MAIN;
 	info->channel_count = 2;
 	info->port_type = CLAP_PORT_STEREO;
 	info->in_place_pair = CLAP_INVALID_ID;
@@ -605,6 +664,16 @@ clap_plugin_note_ports_t const k_note_ports = { note_ports_count, note_ports_get
 
 uint32_t latency_get(clap_plugin_t const *p) { return instance::of(p)->latency; }
 clap_plugin_latency_t const k_latency = { latency_get };
+
+// No parameters (the panel is the instrument), but an empty params extension: clap-wrapper only creates the hidden
+// parameters that carry MIDI CC, pitch bend and program change into a VST3 plugin when the CLAP has one.
+uint32_t params_count(clap_plugin_t const *) { return 0; }
+bool params_get_info(clap_plugin_t const *, uint32_t, clap_param_info_t *) { return false; }
+bool params_get_value(clap_plugin_t const *, clap_id, double *) { return false; }
+bool params_value_to_text(clap_plugin_t const *, clap_id, double, char *, uint32_t) { return false; }
+bool params_text_to_value(clap_plugin_t const *, clap_id, char const *, double *) { return false; }
+void params_flush(clap_plugin_t const *, clap_input_events_t const *, clap_output_events_t const *) { }
+clap_plugin_params_t const k_params = { params_count, params_get_info, params_get_value, params_value_to_text, params_text_to_value, params_flush };
 
 bool render_hard_rt(clap_plugin_t const *) { return false; }
 bool render_set(clap_plugin_t const *p, clap_plugin_render_mode mode) { instance::of(p)->eng.set_realtime(mode == CLAP_RENDER_REALTIME); return true; }
@@ -815,7 +884,7 @@ void p_destroy(clap_plugin_t const *p)
 		{
 			auto const st = s->eng.stats();
 			eiii::lcd_view v; if (s->ui) s->ui->read_lcd(v);
-			fprintf(f, "instance %p emu %.2f frames %llu underruns %llu (first at frame %llu, %llu frames) dropped_in %llu/%llu leds %05x lcd [%s|%s|%s|%s]\n", (void *)s, st.emu_seconds,
+			fprintf(f, "instance %p emu %.2f busy %.2f rt %d frames %llu underruns %llu (first at frame %llu, %llu frames) dropped_in %llu/%llu leds %05x lcd [%s|%s|%s|%s]\n", (void *)s, st.emu_seconds, st.busy_fraction, int(st.rt_priority),
 				(unsigned long long)st.frames_out, (unsigned long long)st.underruns, (unsigned long long)st.first_underrun_at, (unsigned long long)st.underrun_frames, (unsigned long long)st.panel_dropped, (unsigned long long)st.midi_dropped,
 				s->ui ? s->ui->read_leds() : 0u, eiii::lcd_row_text(v, 0).c_str(), eiii::lcd_row_text(v, 1).c_str(), eiii::lcd_row_text(v, 2).c_str(), eiii::lcd_row_text(v, 3).c_str());
 			fclose(f);
@@ -824,6 +893,8 @@ void p_destroy(clap_plugin_t const *p)
 	gui_destroy(p);
 	s->pick.cancel();
 	if (s->export_thread.joinable()) s->export_thread.join();
+	s->convert_cancel = true;
+	if (s->convert_thread.joinable()) s->convert_thread.join();
 	if (s->timer != CLAP_INVALID_ID && s->host_timer) s->host_timer->unregister_timer(s->host, s->timer);
 	s->eng.shutdown();
 	delete s;
@@ -835,7 +906,8 @@ bool p_activate(clap_plugin_t const *p, double sample_rate, uint32_t, uint32_t m
 	// latency allows for) restarts it from power-on, like switching the unit off and on
 	if (!s->eng.started() || sample_rate != s->sample_rate || max_frames > s->max_frames)
 	{
-		if (s->eng.started())
+		bool const restart = s->eng.started();
+		if (restart)
 		{
 			// restart at the new rate: keep what the OS wrote to the disks
 			s->eng.shutdown();
@@ -845,15 +917,32 @@ bool p_activate(clap_plugin_t const *p, double sample_rate, uint32_t, uint32_t m
 		for (unsigned id = 1; id < 8; ++id) c.rt.hd_changes[id] = s->media.hd_changes[id];
 		c.rt.rom_dir = s->media.rom_dir; c.rt.hd_path = s->media.hd(); c.rt.cd_path = s->media.cd(); c.rt.cem_model = s->media.cem_model;
 		for (unsigned id = 4; id < 8; ++id) c.rt.scsi[id] = s->media.scsi[id];
+		// EIIIX / ESI-32 discs: start with their converted copy, or with the drive empty while it is being made
+		std::vector<unsigned> to_convert;
+		for (unsigned id = 3; id < 8; ++id)
+		{
+			std::string &path = id == 3 ? c.rt.cd_path : c.rt.scsi[id].path;
+			if ((id == 3 || c.rt.scsi[id].kind == eiii::scsi_kind::cd) && !path.empty() && eiii::bank_import::needs_conversion(path))
+			{
+				std::string const conv = s->converted_copy(path);
+				if (conv.empty()) to_convert.push_back(id);
+				path = conv;
+			}
+		}
 		c.rt.sample_rate = sample_rate;
 		c.max_block = std::max<uint32_t>(max_frames, 64);
+		c.latency_margin = s->media.latency_margin;
 		c.realtime = true;
 		s->eng.start(c);
 		s->hd_serial = s->eng.hd_changes_serial();
 		s->sample_rate = sample_rate; s->max_frames = std::max<uint32_t>(max_frames, 64);
 		unsigned const lat = s->eng.latency();
-		if (lat != s->latency) { s->latency = lat; if (s->host_latency) s->host_latency->changed(s->host); }
+		// the host reads the latency after activate(), so only a restart changes what it already knows.  Not calling
+		// changed() on the first activation also keeps Qtractor alive: through clap-wrapper it becomes a VST3
+		// restartComponent(kLatencyChanged) from inside the host's own setActive(), and Qtractor crashed on that.
+		if (lat != s->latency) { s->latency = lat; if (restart && s->host_latency) s->host_latency->changed(s->host); }
 		s->setup_macro();
+		for (unsigned id : to_convert) s->start_conversion(id, id == 3 ? s->media.cd() : s->media.scsi[id].path);
 	}
 	return true;
 }
@@ -920,6 +1009,7 @@ void const *p_get_extension(clap_plugin_t const *, char const *id)
 	if (!strcmp(id, CLAP_EXT_AUDIO_PORTS)) return &k_audio_ports;
 	if (!strcmp(id, CLAP_EXT_NOTE_PORTS)) return &k_note_ports;
 	if (!strcmp(id, CLAP_EXT_LATENCY)) return &k_latency;
+	if (!strcmp(id, CLAP_EXT_PARAMS)) return &k_params;
 	if (!strcmp(id, CLAP_EXT_RENDER)) return &k_render;
 	if (!strcmp(id, CLAP_EXT_STATE)) return &k_state;
 	if (!strcmp(id, CLAP_EXT_GUI)) return &k_gui;
@@ -953,4 +1043,7 @@ void const *e_get_factory(char const *id) { return !strcmp(id, CLAP_PLUGIN_FACTO
 
 } // namespace
 
-extern "C" CLAP_EXPORT clap_plugin_entry_t const clap_entry = { CLAP_VERSION_INIT, e_init, e_deinit, e_get_factory };
+// exported as clap_entry by eiii_clap_entry.cpp
+bool eiii_rack_init(char const *plugin_path) { return e_init(plugin_path); }
+void eiii_rack_deinit() { e_deinit(); }
+void const *eiii_rack_get_factory(char const *factory_id) { return e_get_factory(factory_id); }

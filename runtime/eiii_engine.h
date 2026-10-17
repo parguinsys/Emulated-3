@@ -3,7 +3,7 @@
 //   GUI/main thread : post() hardware inputs, snapshot() the panel state, power()
 //   audio thread    : midi() timestamped MIDI IN bytes, pull() audio frames — never blocks in realtime mode,
 //                     never allocates, never locks.
-// Latency (max(1024 frames at 48 kHz, 2 x block + 512)): the engine keeps exactly `latency()` frames ahead of the audio thread; MIDI posted at block offset s is
+// Latency (largest host block + a margin, default_latency_margin frames at 48 kHz scaled to the rate): the engine keeps exactly `latency()` frames ahead of the audio thread; MIDI posted at block offset s is
 // applied at that frame + latency, i.e. sample-accurately delayed by the reported latency.
 #pragma once
 #include "eiii_runtime.h"
@@ -53,6 +53,9 @@ struct engine_config
 {
 	runtime_config rt;
 	size_t max_block = 1024;        // largest host block (frames)
+	// frames at 48 kHz (scaled to the sample rate) the engine keeps ready beyond one host block; 0 = default
+	static constexpr unsigned default_latency_margin = 256;
+	unsigned latency_margin = 0;
 	bool realtime = true;           // false: pull() waits for the engine (offline render)
 };
 
@@ -60,6 +63,8 @@ struct engine_stats
 {
 	uint64_t frames_out = 0, underruns = 0, underrun_frames = 0, first_underrun_at = 0, dropped_frames = 0, midi_dropped = 0, panel_dropped = 0;
 	double emu_seconds = 0, busy_fraction = 0;
+	uint64_t input_conversions = 0, input_missed = 0, input_clamped = 0;   // sampling: conversions, outside the received input, kernel taps past its ends
+	bool rt_priority = false;        // the engine thread got its realtime (SCHED_FIFO) priority
 };
 
 class engine
@@ -154,7 +159,12 @@ private:
 	std::atomic<uint64_t> m_hd_serial{0};
 	uint64_t m_hd_seen[8] = {};              // engine thread: write counts last published
 	int64_t m_hd_dirty_ns[8] = {};
-	void adc_sample(double t, int16_t lr[2]);
+	void adc_sample(double t, bool khz44, int16_t lr[2]);
+	static constexpr int aa_taps = 32, aa_phases = 256;
+	std::vector<float> m_aa[2];              // anti-alias kernels (build_aa), [0] 14.2 kHz, [1] 20 kHz
+	void build_aa();
+	double input_gain() const;               // engine thread, m_rt set
+	double m_env[2] = {};                    // engine thread: input envelope followers L/R (0..1 of full scale)
 	spsc_queue<media_request *> m_media_in{16}, m_media_out{16};   // main -> engine -> main (ownership travels)
 	unsigned m_media_inflight = 0;           // main thread
 	runtime_config m_view;                   // main thread: configuration in use as last reported
@@ -167,6 +177,8 @@ private:
 	std::atomic<uint64_t> m_first_underrun_at{0};
 	std::atomic<uint64_t> m_underruns{0}, m_underrun_frames{0}, m_frames_out{0}, m_dropped{0}, m_midi_dropped{0}, m_panel_dropped{0};
 	std::atomic<double> m_emu_seconds{0}, m_busy{0};
+	std::atomic<bool> m_rt_priority{false};
+	std::atomic<uint64_t> m_in_conv{0}, m_in_missed{0}, m_in_clamped{0};
 	std::vector<float> m_silence;
 };
 

@@ -1,4 +1,4 @@
-/* OFL fonts compiled into the binary (see third_party/README.md); assembled with -Wa,-I<third_party/fonts> */
+/* OFL fonts compiled into the binary (see third_party/README.md and ui/fonts.h); assembled with -Wa,-I<third_party/fonts> */
 	.section .rodata
 	.balign 16
 	.global eiii_font_regular
@@ -24,4 +24,17 @@ eiii_font_bold_end:
 eiii_font_narrow:
 	.incbin "ArchivoNarrow-wght.ttf"
 eiii_font_narrow_end:
+	.balign 8
+	.global eiii_font_regular_size
+	.hidden eiii_font_regular_size
+eiii_font_regular_size:
+	.quad eiii_font_regular_end - eiii_font_regular
+	.global eiii_font_bold_size
+	.hidden eiii_font_bold_size
+eiii_font_bold_size:
+	.quad eiii_font_bold_end - eiii_font_bold
+	.global eiii_font_narrow_size
+	.hidden eiii_font_narrow_size
+eiii_font_narrow_size:
+	.quad eiii_font_narrow_end - eiii_font_narrow
 	.section .note.GNU-stack,"",%progbits

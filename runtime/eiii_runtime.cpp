@@ -270,11 +270,13 @@ scsi_kind runtime::drive_kind(unsigned id) const
 	return m->extra[id].hd ? scsi_kind::hd : m->extra[id].cd ? scsi_kind::cd : scsi_kind::none;
 }
 
-void runtime::set_adc_source(std::function<void(double, int16_t[2])> source)
+void runtime::set_adc_source(std::function<void(double, bool, int16_t[2])> source)
 {
 	if (!source) { m->m.adc_source = nullptr; return; }
-	m->m.adc_source = [src = std::move(source)](double t, s16 *lr) { int16_t v[2] = { 0, 0 }; src(t, v); lr[0] = v[0]; lr[1] = v[1]; };
+	m->m.adc_source = [src = std::move(source)](double t, bool khz44, s16 *lr) { int16_t v[2] = { 0, 0 }; src(t, khz44, v); lr[0] = v[0]; lr[1] = v[1]; };
 }
+
+void runtime::set_adc_envelope(std::function<void(uint16_t &, uint16_t &)> envelope) { m->m.adc_env = std::move(envelope); }
 
 std::string runtime::hd_changes(unsigned id) const { harddisk_image_device *h = m->hd_image(id); return h ? h->export_changes() : std::string(); }
 size_t runtime::hd_changed_sectors(unsigned id) const { harddisk_image_device *h = m->hd_image(id); return h ? h->changed_sectors() : 0; }
@@ -319,6 +321,10 @@ uint16_t runtime::debug_read16(uint32_t a) const
 	return 0;
 }
 uint32_t runtime::debug_read32(uint32_t a) const { return uint32_t(debug_read16(a)) | (uint32_t(debug_read16(a + 2)) << 16); }
+void runtime::debug_adc_reads(uint64_t left[256], uint64_t right[256]) const
+{
+	for (unsigned i = 0; i < 256; ++i) { left[i] = m->m.adc_left_reads[i]; right[i] = m->m.adc_right_reads[i]; }
+}
 
 uint64_t runtime::cycles() const { return m->cpu ? uint64_t(m->cpu->total_cycles()) : 0; }
 double runtime::seconds() const { return double(cycles()) / cpu_hz; }

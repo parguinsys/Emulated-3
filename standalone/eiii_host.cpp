@@ -6,6 +6,7 @@
 #include "host_io.h"
 #include "ui_macro.h"
 #include "eiii_gui.h"
+#include "board_io.h"
 #include <chrono>
 #include <csignal>
 #include <regex>
@@ -35,7 +36,7 @@ namespace {
 
 struct options_t
 {
-	std::string midi_in, audio_out;
+	std::string midi_in, audio_out, board;
 	unsigned period_frames = 0, periods = 0;
 	int autoload_bank = -1, autoload_drive = 3, preset = -1;
 	bool realtime = false, verbose_midi = false, stats = false;
@@ -67,6 +68,9 @@ void print_help()
 "live use\n"
 "  --midi-in DEV          ALSA raw MIDI input, e.g. hw:1,0,0 (see --list-midi); bytes go to the Z85230 MIDI IN\n"
 "  --audio-out DEV        ALSA PCM output, e.g. default or plughw:0,0 (see --list-audio); 48 kHz stereo\n"
+"  --board PORT           play the voices through the analog voice board: its Teensy's USB serial port (e.g.\n"
+"                         /dev/ttyACM0) or tools/board_sim's link; the board's clock paces the emulation and its\n"
+"                         MIDI IN is used as well (headless only for now)\n"
 "  --period N / --periods N   ALSA period size in frames (256) / number of periods (4)\n"
 "  --realtime             pace to the wall clock when no --audio-out is given (with --audio-out the device paces)\n"
 "  --autoload-bank N      operate the ORIGINAL front panel to load bank N: Load Bank, Enter, drive, Enter, N, Enter\n"
@@ -163,6 +167,7 @@ int main(int argc, char **argv)
 		else if (k == "--script") scriptfile = val();
 		else if (k == "--midi-in") g_opt.midi_in = val();
 		else if (k == "--audio-out") g_opt.audio_out = val();
+		else if (k == "--board") g_opt.board = val();
 		else if (k == "--period") g_opt.period_frames = unsigned(atoi(val()));
 		else if (k == "--periods") g_opt.periods = unsigned(atoi(val()));
 		else if (k == "--autoload-bank") g_opt.autoload_bank = atoi(val());
@@ -206,6 +211,7 @@ int main(int argc, char **argv)
 		else { fprintf(stderr, "eiii-standalone: unknown option '%s' (see --help)\n", k.c_str()); return 2; }
 	}
 	if (hdpath.empty()) { fprintf(stderr, "eiii-standalone: --hard <OS 2.42 hard disk image> is required (see --help)\n"); return 2; }
+	if (gui && !g_opt.board.empty()) { fprintf(stderr, "eiii-standalone: --board works without --gui for now\n"); return 2; }
 	if (gui)
 	{
 		go.rom_dir = romdir; go.hd = hdpath; go.cd = cdpath; go.cem_model = g_opt.cem_model; go.cem_calib = g_opt.cem_calib;
@@ -398,6 +404,17 @@ int main(int argc, char **argv)
 		}
 	});
 
+	// analog voice board: lanes + CV words go to the board instead of the CEM3387 model (before anything renders)
+	board_port board;
+	if (!g_opt.board.empty())
+	{
+		std::string berr;
+		if (!board.open(g_opt.board, berr)) { fprintf(stderr, "eiii-standalone: %s\n", berr.c_str()); return 3; }
+		backend.use_board(&board);
+		fprintf(stderr, "board: %s, buffer %u frames (%.1f ms at 96 kHz)%s\n", g_opt.board.c_str(), board.status().capacity,
+			board.status().capacity / 96.0, board.status().flags & eiii::board::RAIL_OK ? "" : ", rails NOT ok");
+	}
+
 	// power on: resolve/start/reset the devices in MAME order, start the MIDI RxD clock if there is MIDI
 	rt.power_on();
 	if (inject_at >= 0) inject_timer.adjust(attotime::from_double(inject_at));
@@ -460,7 +477,12 @@ int main(int argc, char **argv)
 			auto const ta = std::chrono::steady_clock::now();
 			rt.render_audio();
 			consume_audio();
-			if (midi_in.is_open() && midi_in.read(midi_bytes))
+			if (board.is_open())
+			{
+				board.poll(midi_bytes);
+				if (board.failed()) { fprintf(stderr, "board: link lost at %.3f s emulated\n", rt.seconds()); g_stop = 1; }
+			}
+			if ((midi_in.is_open() && midi_in.read(midi_bytes)) || !midi_bytes.empty())
 			{
 				for (u8 b2 : midi_bytes)
 				{
@@ -501,12 +523,20 @@ int main(int argc, char **argv)
 		fprintf(stderr, "wrote %s: %.2f s stereo from the software CEM backend\n", wavfile.c_str(), wav_frames / 48000.0);
 	}
 	double const emu_s = double(cpu.local_time().m_seconds);
-	if (g_opt.stats || audio.is_open() || g_opt.realtime)
+	if (board.is_open())
+	{
+		t_wait += board.seconds_waiting();
+		fprintf(stderr, "board: %llu frames sent (%.3f s), board underruns %u; waited %.3f s for buffer space, longest packet write "
+			"%.1f ms, longest gap between packets %.1f ms\n", (unsigned long long)board.frames_sent(), board.frames_sent() / 96000.0,
+			board.status().underruns, board.seconds_waiting(), board.longest_write() * 1e3, board.longest_gap() * 1e3);
+		board.close();
+	}
+	if (g_opt.stats || audio.is_open() || g_opt.realtime || !g_opt.board.empty())
 	{
 		double const busy = wall - t_wait;
 		fprintf(stderr, "STATS emulated %.3f s in %.3f s wall (%.2fx%s); busy %.3f s = %.0f %% load -> %.2fx realtime capacity; "
 			"emulation+timers+CEM-on-write %.3f s, chunk render+audio+MIDI %.3f s; XRUNs %u\n",
-			emu_s, wall, emu_s / wall, (audio.is_open() || g_opt.realtime) ? ", paced" : "", busy, 100.0 * busy / wall, emu_s / busy,
+			emu_s, wall, emu_s / wall, (audio.is_open() || g_opt.realtime || !g_opt.board.empty()) ? ", paced" : "", busy, 100.0 * busy / wall, emu_s / busy,
 			t_cpu, t_audio - t_wait, audio.xruns());
 	}
 	if (g_opt.stats)

@@ -23,6 +23,16 @@ Everything compiles from this tree: the MAME device sources it uses are vendored
 (BSD-3-Clause, provenance and SHA256 manifest in `third_party/mame/PROVENANCE.md`), together with Berkeley SoftFloat 3e.
 `MAME=/path/to/mame make` builds from a live MAME tree instead.
 
+### Raspberry Pi (Pi 400, Pi 4, Pi 5)
+
+Needs 64-bit Raspberry Pi OS (bookworm or newer). On the Pi itself, with the packages above plus `libx11-dev libxext-dev`:
+
+    make pi               # -> dist/Emulated-3-v<version>-linux-arm64-pi.tar.gz (tuned for the Pi 400's Cortex-A72)
+
+The same command on an x86-64 Linux machine cross-builds the identical archive with clang and lld
+(`sudo apt install clang lld debootstrap`); the first run fetches an ARM64 sysroot with `tools/pi_sysroot.sh` (asks for
+sudo once). Copy the archive to the Pi, unpack it, and run `./eiii-standalone --stats ...` to see the realtime factor.
+
 ## Media
 
 | What | Option | Notes |
@@ -164,4 +174,5 @@ i5-3570K (2012, 3.4 GHz): about **5× realtime capacity** with boot, SCSI bank l
 * No MIDI OUT, no sampling input (ADC audio), no SMPTE/sync, no metronome click, no individual outputs.
 * No state save/restore; OS writes to the hard disk are discarded at exit (images are never modified).
 * The analog voice model (CEM3387) follows the datasheet and schematics; it has not been compared to a real EIII.
-* ARM64 (Raspberry Pi) builds are expected to work but are untested: `analysis/ARM64_PORTABILITY_AUDIT.md`.
+* ARM64 (Raspberry Pi) builds pass the analog-model golden tests under emulation but have not yet run on a Pi:
+  `analysis/ARM64_PORTABILITY_AUDIT.md`.

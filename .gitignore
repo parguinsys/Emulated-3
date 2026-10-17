@@ -52,3 +52,5 @@ eiii.conf
 *.swp
 *~
 .cache/
+/firmware/teensy41/build/
+/hdl/build/

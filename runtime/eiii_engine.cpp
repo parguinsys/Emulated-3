@@ -180,9 +180,20 @@ void engine::drain_input()
 		if (!n) break;
 		for (size_t k = 0; k < n; ++k) { m_in_buf.push_back(l[k]); m_in_buf.push_back(r[k]); }
 		m_in_end += n;
+		// the input envelope followers (VU meter) see every frame as it arrives, sampling or not: peak hold with
+		// a 300 ms release, after the Sample Input level.  The board's follower circuit is not documented.
+		if (m_rt)
+		{
+			double const g = input_gain(), rel = std::exp(-1.0 / (0.3 * m_cfg.rt.sample_rate));
+			for (size_t k = 0; k < n; ++k)
+			{
+				double const v[2] = { g * std::fabs(double(l[k])), g * std::fabs(double(r[k])) };
+				for (int c = 0; c < 2; ++c) m_env[c] = v[c] > m_env[c] ? v[c] : m_env[c] * rel;
+			}
+		}
 	}
 	uint64_t const base = m_in_end - m_in_buf.size() / 2;
-	int64_t const cur = int64_t(m_emu_frames) - m_ring_to_emu - int64_t(m_latency) - 64;   // input index now in use
+	int64_t const cur = int64_t(m_emu_frames) - m_ring_to_emu - int64_t(m_latency) - aa_taps / 2 - 64;   // input index now in use
 	if (!m_rt) { m_in_buf.clear(); return; }
 	if (cur > int64_t(base))
 	{
@@ -191,29 +202,76 @@ void engine::drain_input()
 	}
 }
 
+// engine thread: input level, the Sample Input slider (ADC multiplexer X0).  The original dbx 2155 gain law is not
+// documented; assumed: centre of travel = unity, +-20 dB at the ends (log taper), silent at the very bottom.
+double engine::input_gain() const
+{
+	double const p = double(m_rt->adc_input(0)) / double(0x7100);
+	return p < 0.01 ? 0.0 : std::pow(10.0, (std::min(p, 1.0) - 0.5) * 2.0);
+}
+
 // engine thread, inside the emulation: the analog input at a conversion (emulated seconds)
-void engine::adc_sample(double t, int16_t lr[2])
+void engine::adc_sample(double t, bool khz44, int16_t lr[2])
 {
 	lr[0] = lr[1] = 0;
 	if (!m_rt) return;
-	double const idx = t * m_cfg.rt.sample_rate - double(m_ring_to_emu) - double(m_latency);   // input index
+	// input index; aa_taps / 2 frames later than the frame being emulated, so the filter kernel's look-ahead is already
+	// there (the audio thread hands over a block's input only just before it pulls that block)
+	double const idx = t * m_cfg.rt.sample_rate - double(m_ring_to_emu) - double(m_latency) - aa_taps / 2;
 	// the audio thread hands over each block's input before it pulls that block, so frames the emulation may reach
 	// are in the ring by now; fetch them if this step started before they arrived
-	if (idx + 1 >= double(m_in_end)) drain_input();
-	if (m_in_buf.size() < 4) return;
-	double const pos = idx - double(m_in_end - m_in_buf.size() / 2);
-	if (pos < 0 || pos >= double(m_in_buf.size() / 2 - 1)) return;
-	size_t const i = size_t(pos);
-	float const f = float(pos - double(i));
-	// input level: the Sample Input slider (ADC multiplexer X0).  The original dbx 2155 gain law is not documented;
-	// assumed: centre of travel = unity, +-20 dB at the ends (log taper), silent at the very bottom.
-	double const p = double(m_rt->adc_input(0)) / double(0x7100);
-	double const gain = p < 0.01 ? 0.0 : std::pow(10.0, (std::min(p, 1.0) - 0.5) * 2.0);
+	if (idx + aa_taps / 2 >= double(m_in_end)) drain_input();
+	size_t const frames = m_in_buf.size() / 2;
+	m_in_conv.fetch_add(1, std::memory_order_relaxed);
+	if (frames < 4) { m_in_missed.fetch_add(1, std::memory_order_relaxed); return; }
+	double const pos = idx - double(m_in_end - frames);
+	if (pos < 0 || pos >= double(frames - 1)) { m_in_missed.fetch_add(1, std::memory_order_relaxed); return; }
+	// the board's anti-alias filter (20 kHz with +KHZ44, else 14.2 kHz) as a windowed-sinc kernel around pos; frames
+	// outside the buffer count as the nearest edge frame
+	int64_t const i0 = int64_t(std::floor(pos)) - aa_taps / 2 + 1;
+	if (i0 < 0 || i0 + aa_taps > int64_t(frames)) m_in_clamped.fetch_add(1, std::memory_order_relaxed);
+	double const ph = (pos - std::floor(pos)) * aa_phases;
+	int const p = std::min(int(ph), aa_phases - 1);
+	double const w = ph - p;
+	float const *k0 = &m_aa[khz44][size_t(p) * aa_taps], *k1 = k0 + aa_taps;
+	double acc[2] = { 0, 0 };
+	for (int k = 0; k < aa_taps; ++k)
+	{
+		size_t const j = size_t(std::clamp<int64_t>(i0 + k, 0, int64_t(frames) - 1));
+		double const h = k0[k] + (k1[k] - k0[k]) * w;
+		acc[0] += h * m_in_buf[2 * j]; acc[1] += h * m_in_buf[2 * j + 1];
+	}
+	double const gain = input_gain();   // the Sample Input slider
 	for (int c = 0; c < 2; ++c)
 	{
-		float const x = m_in_buf[2 * i + c] + (m_in_buf[2 * (i + 1) + c] - m_in_buf[2 * i + c]) * f;
-		double const v = std::lround(double(x) * gain * 32767.0);
+		double const v = std::lround(acc[c] * gain * 32767.0);
 		lr[c] = int16_t(std::clamp(v, -32768.0, 32767.0));
+	}
+}
+
+// anti-alias kernels at the host rate: [khz44][phase 0..aa_phases][tap], Blackman-windowed sinc, unity gain at DC.
+// Phase p is the fractional position p / aa_phases between input frames (aa_phases + 1 rows for interpolation).
+void engine::build_aa()
+{
+	double const sr = m_cfg.rt.sample_rate;
+	for (int m = 0; m < 2; ++m)
+	{
+		double const fc = std::min(m ? 20000.0 : 14200.0, 0.45 * sr) / sr;   // cycles per input frame
+		m_aa[m].assign(size_t(aa_phases + 1) * aa_taps, 0.0f);
+		for (int p = 0; p <= aa_phases; ++p)
+		{
+			double const frac = double(p) / aa_phases;
+			double sum = 0, h[aa_taps];
+			for (int k = 0; k < aa_taps; ++k)
+			{
+				double const x = double(k - aa_taps / 2 + 1) - frac;                // tap position relative to pos
+				double const u = (x + aa_taps / 2.0) / aa_taps;                      // 0..1 across the window
+				double const win = u <= 0 || u >= 1 ? 0.0 : 0.42 - 0.5 * std::cos(2 * M_PI * u) + 0.08 * std::cos(4 * M_PI * u);
+				double const s = std::fabs(x) < 1e-12 ? 2 * fc : std::sin(2 * M_PI * fc * x) / (M_PI * x);
+				h[k] = s * win; sum += h[k];
+			}
+			for (int k = 0; k < aa_taps; ++k) m_aa[m][size_t(p) * aa_taps + k] = float(h[k] / sum);
+		}
 	}
 }
 
@@ -323,8 +381,12 @@ void engine::start(engine_config const &cfg)
 	m_cfg = cfg;
 	m_realtime = cfg.realtime;
 	double const sr = cfg.rt.sample_rate;
-	unsigned const min_lat = unsigned(std::lround(1024.0 * sr / 48000.0));
-	m_latency = std::max<unsigned>(min_lat, unsigned(2 * cfg.max_block + 512));
+	// the audio thread takes at most one block at a time and the engine refills the ring as soon as it has room, so
+	// the ring only needs one block plus a margin for the engine thread's scheduling and for stretches where the
+	// emulation runs slower than real time
+	double const margin_48k = cfg.latency_margin ? double(cfg.latency_margin) : double(engine_config::default_latency_margin);
+	build_aa();
+	m_latency = unsigned(cfg.max_block) + unsigned(std::lround(margin_48k * sr / 48000.0));
 	if (m_latency > m_ring.capacity() / 2) m_latency = unsigned(m_ring.capacity() / 2);
 	m_quit = false;
 	m_primed = false;
@@ -360,6 +422,8 @@ engine_stats engine::stats() const
 	engine_stats s;
 	s.frames_out = m_frames_out; s.underruns = m_underruns; s.first_underrun_at = m_first_underrun_at; s.underrun_frames = m_underrun_frames; s.dropped_frames = m_dropped;
 	s.midi_dropped = m_midi_dropped; s.panel_dropped = m_panel_dropped; s.emu_seconds = m_emu_seconds; s.busy_fraction = m_busy;
+	s.rt_priority = m_rt_priority;
+	s.input_conversions = m_in_conv; s.input_missed = m_in_missed; s.input_clamped = m_in_clamped;
 	return s;
 }
 
@@ -395,7 +459,11 @@ bool engine::boot(std::string &err)
 {
 	m_rt = std::make_unique<runtime>();
 	if (!m_rt->open(m_cfg.rt, err)) { m_rt.reset(); return false; }
-	m_rt->set_adc_source([this](double t, int16_t lr[2]) { adc_sample(t, lr); });
+	m_rt->set_adc_source([this](double t, bool khz44, int16_t lr[2]) { adc_sample(t, khz44, lr); });
+	m_rt->set_adc_envelope([this](uint16_t &l, uint16_t &r) {
+		l = uint16_t(std::lround(std::min(m_env[0], 1.0) * 0x7fff)); r = uint16_t(std::lround(std::min(m_env[1], 1.0) * 0x7fff));
+	});
+	m_env[0] = m_env[1] = 0;
 	if (!m_rt->open_warning().empty()) { std::lock_guard<std::mutex> g(m_hd_mutex); m_warning = m_rt->open_warning(); }
 	publish_hd_changes(true);
 	m_emu_frames = 0;
@@ -424,7 +492,7 @@ void engine::thread_main()
 	{
 		// a modest realtime priority when the process is allowed one (RLIMIT_RTPRIO / rtkit-granted hosts); else unchanged
 		sched_param sp{}; sp.sched_priority = 10;
-		pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+		m_rt_priority = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
 	}
 	m_silence.assign(4096, 0.0f);
 	m_in_buf.clear(); m_in_end = m_in.read_index();

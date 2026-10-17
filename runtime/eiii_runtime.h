@@ -87,8 +87,12 @@ public:
 
 	// ---- sampling input ----
 	// The ADC board's analog input: called on the instance's thread at each conversion the OS performs (44 053 or
-	// 33 333 Hz, paced by ADC WAIT), with the conversion time in emulated seconds; returns the L/R ADC words.
-	void set_adc_source(std::function<void(double t_seconds, int16_t lr[2])> source);
+	// 33 333 Hz, paced by ADC WAIT), with the conversion time in emulated seconds and +KHZ44 (the 44 kHz rate and its
+	// anti-alias filter selected); returns the L/R ADC words.
+	void set_adc_source(std::function<void(double t_seconds, bool khz44, int16_t lr[2])> source);
+	// The input envelope followers (L, R), read by the OS's VU meter (SAMPLE 5) with the multiplexer at X7: firmware
+	// ADC units 0..0x7FFF.  Unset: the static X7 value.
+	void set_adc_envelope(std::function<void(uint16_t &left, uint16_t &right)> envelope);
 
 	// ---- hard disk changes ----
 	// Hard disk images are opened read-only; what the OS writes (Save Bank, ...) is kept as a change set over the image.
@@ -103,6 +107,8 @@ public:
 	// ---- diagnostics (tests): read emulated memory as the CPU sees it, no side effects on RAM / sample RAM ----
 	uint16_t debug_read16(uint32_t address) const;
 	uint32_t debug_read32(uint32_t address) const;   // little-endian, as the NS32016
+	// ADC board word reads since power-on, per value of the control latch (0x360000): left = 0x368000, right = 0x368002
+	void debug_adc_reads(uint64_t left[256], uint64_t right[256]) const;
 
 	// ---- media (SCSI ID 3 CD-ROM drive) ----
 	// A disc change as on the real drive: the next command after a mount reports UNIT ATTENTION (new medium), an empty

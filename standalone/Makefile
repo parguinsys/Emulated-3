@@ -25,9 +25,9 @@ SFDIR     = $(MAME)/3rdparty/softfloat3
 SFDEFS    = -DSOFTFLOAT_ROUND_ODD -DINLINE_LEVEL=5 -DSOFTFLOAT_FAST_DIV32TO16 -DSOFTFLOAT_FAST_DIV64TO32 -DSOFTFLOAT_FAST_INT64 -DLITTLEENDIAN=1
 SFINC     = -I$(MAME)/src/osd -I$(SFDIR)/build/MAME -I$(SFDIR)/source -I$(SFDIR)/source/include -I$(SFDIR)/source/8086 -I$(SFDIR)/bochs_ext
 
-SRC_HOST  = eiii_host.cpp eiii_gui.cpp host_io.cpp shim/emu_shim.cpp eiii_scsi.cpp diserial_shim.cpp
+SRC_HOST  = eiii_host.cpp eiii_gui.cpp host_io.cpp board_io.cpp shim/emu_shim.cpp eiii_scsi.cpp diserial_shim.cpp
 SRC_CORE  = ../fchip/eiii_fchip.cpp ../cem/eiii_cem3387.cpp ../cem/eiii_cem_calibration.cpp ../cem/eiii_cem_cv_conditioning.cpp \
-            ../cem/eiii_cem3387_v2.cpp ../host/eiii_backend.cpp ../runtime/eiii_runtime.cpp ../runtime/eiii_engine.cpp \
+            ../cem/eiii_cem3387_v2.cpp ../host/eiii_backend.cpp ../host/eiii_board_link.cpp ../runtime/eiii_runtime.cpp ../runtime/eiii_engine.cpp ../runtime/eiii_bank_import.cpp \
             ../panel/eiii_lcd.cpp ../panel/eiii_panel_model.cpp ../panel/eiii_panel_adapter.cpp
 # UI layer (software renderer, panel artwork) — linked by the GUI/plugin/tools only
 SRC_UI    = ../ui/raster.cpp ../ui/panel_view.cpp ../ui/panel_menu.cpp ../ui/x11_window.cpp ../ui/panel_window.cpp
@@ -47,13 +47,15 @@ TRACES   ?= $(HOME)/EIII_RE/analysis/traces/standalone_spike
 eiii-standalone: $(BUILD)/eiii-standalone
 	cp $< $@
 
-# everything except the standalone's main: the runtime library shared by the standalone, the tests and the plugin
-LIB_OBJS  = $(filter-out $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o,$(OBJ))
+# everything except the standalone's main and its ALSA I/O: the runtime library shared by the standalone, the tests and
+# the plugin (which therefore does not link libasound)
+HOST_ONLY = $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o $(BUILD)/obj/host_io.o $(BUILD)/obj/board_io.o
+LIB_OBJS  = $(filter-out $(HOST_ONLY),$(OBJ))
 $(BUILD)/libeiiiruntime.a: $(LIB_OBJS)
 	rm -f $@; ar rcs $@ $^
 
-$(OUT): $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a
-	$(CXX) $(LDFLAGS) -o $@ $(BUILD)/obj/eiii_host.o $(BUILD)/obj/eiii_gui.o $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a $(LDLIBS) $(LDLIBS_X)
+$(OUT): $(HOST_ONLY) $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a
+	$(CXX) $(LDFLAGS) -o $@ $(HOST_ONLY) $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a $(LDLIBS) $(LDLIBS_X)
 
 # UI library: renderer + panel artwork + embedded OFL fonts
 OBJ_UI    = $(addprefix $(BUILD)/obj/,$(notdir $(SRC_UI:.cpp=.o))) $(BUILD)/obj/fonts.o
@@ -63,6 +65,8 @@ $(BUILD)/libeiiiui.a: $(OBJ_UI)
 	rm -f $@; ar rcs $@ $^
 $(BUILD)/tools/clap_host_test: ../tools/clap_host_test.cpp | $(BUILD)/tools
 	$(CXX) $(CXXFLAGS) -I../third_party/clap/include $< -o $@ -lX11 -ldl -lpthread
+$(BUILD)/tools/latency_bench: ../tools/latency_bench.cpp | $(BUILD)/tools
+	$(CXX) $(CXXFLAGS) -I../third_party/clap/include $< -o $@ -ldl -lpthread
 $(BUILD)/tools/%: ../tools/%.cpp $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a | $(BUILD)/tools
 	$(CXX) $(CXXFLAGS) -I.. -MMD -MP $< $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a $(LDLIBS) $(LDLIBS_X) -o $@
 $(BUILD)/tools:
@@ -73,10 +77,11 @@ $(BUILD)/tools:
 plugin:
 	$(MAKE) BUILD=build/pic OPT="-O2 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden" build/pic/EIII-Rack.clap
 	@echo "CLAP plugin: $(CURDIR)/build/pic/EIII-Rack.clap"
-$(BUILD)/EIII-Rack.clap: $(BUILD)/obj/eiii_clap.o $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a ../plugin/exports.map
-	$(CXX) -shared $(PLUGIN_LDFLAGS) -o $@ $(BUILD)/obj/eiii_clap.o $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a \
-	       -Wl,--version-script=../plugin/exports.map -Wl,--exclude-libs,ALL -Wl,-z,defs $(LDLIBS_X) -lasound -lpthread
--include $(BUILD)/obj/eiii_clap.d
+PLUGIN_OBJ = $(BUILD)/obj/eiii_clap.o $(BUILD)/obj/eiii_clap_entry.o
+$(BUILD)/EIII-Rack.clap: $(PLUGIN_OBJ) $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a ../plugin/exports.map
+	$(CXX) -shared $(PLUGIN_LDFLAGS) -o $@ $(PLUGIN_OBJ) $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a \
+	       -Wl,--version-script=../plugin/exports.map -Wl,--exclude-libs,ALL -Wl,-z,defs $(LDLIBS_X) -lpthread
+-include $(PLUGIN_OBJ:.o=.d)
 
 # panel view tests (link the UI library)
 $(BUILD)/tests/display_themes: ../tests/display_themes.cpp $(BUILD)/libeiiiui.a $(BUILD)/libeiiiruntime.a $(BUILD)/libsoftfloat3.a | $(BUILD)/tests
@@ -98,6 +103,7 @@ endef
 $(foreach s,$(filter-out eiii_scsi.cpp,$(SRC_HOST)) $(SRC_CORE),$(eval $(call cxx_rule,$(s),)))
 $(foreach s,$(SRC_UI),$(eval $(call cxx_rule,$(s),)))
 $(eval $(call cxx_rule,../plugin/eiii_clap.cpp,-I../third_party/clap/include))
+$(eval $(call cxx_rule,../plugin/eiii_clap_entry.cpp,-I../third_party/clap/include))
 # eiii_scsi.cpp is extracted verbatim from emu3.cpp and includes MAME headers: treat like upstream code
 $(eval $(call cxx_rule,eiii_scsi.cpp,-w))
 # upstream MAME files are compiled unmodified; their warnings are not ours to fix
@@ -121,6 +127,29 @@ release:
 	cp README.md dist/README.md
 	cd dist && sha256sum eiii-standalone README.md > SHA256SUMS
 	@ls -la dist; echo "release binary: $(CURDIR)/dist/eiii-standalone"
+# Raspberry Pi 400 / Pi 4 / Pi 5 (64-bit Raspberry Pi OS bookworm or newer): stripped standalone for Cortex-A72, built
+# natively on the Pi or cross-built on x86-64 Linux (clang + lld against the sysroot tools/pi_sysroot.sh fetches once).
+#   -> dist/Emulated-3-v$(VERSION)-linux-arm64-pi.tar.gz
+PI_SYSROOT ?= $(HOME)/.cache/eiii/pi-sysroot
+PI_OPT      = -O2 -DNDEBUG -mcpu=cortex-a72
+PI_PKG      = Emulated-3-v$(VERSION)-linux-arm64-pi
+pi:
+ifeq ($(shell uname -m),aarch64)
+	$(MAKE) BUILD=build/pi OPT="$(PI_OPT)" LDFLAGS="-static-libstdc++ -static-libgcc" OUT=build/pi/eiii-standalone build/pi/eiii-standalone
+	strip -o build/pi/eiii-standalone.stripped build/pi/eiii-standalone
+else
+	../tools/pi_sysroot.sh $(PI_SYSROOT)
+	$(MAKE) BUILD=build/pi OPT="$(PI_OPT)" CXX="clang++ --target=aarch64-linux-gnu --sysroot=$(PI_SYSROOT)" \
+	        CC="clang --target=aarch64-linux-gnu --sysroot=$(PI_SYSROOT)" LDFLAGS="-fuse-ld=lld -static-libstdc++ -static-libgcc" \
+	        OUT=build/pi/eiii-standalone build/pi/eiii-standalone
+	llvm-strip -o build/pi/eiii-standalone.stripped build/pi/eiii-standalone
+endif
+	rm -rf dist/$(PI_PKG); mkdir -p dist/$(PI_PKG)
+	cp build/pi/eiii-standalone.stripped dist/$(PI_PKG)/eiii-standalone
+	cp README.md dist/$(PI_PKG)/README.md; cp ../LICENSE dist/$(PI_PKG)/
+	cd dist && tar czf $(PI_PKG).tar.gz $(PI_PKG) && sha256sum $(PI_PKG).tar.gz > $(PI_PKG).tar.gz.sha256
+	@echo "Raspberry Pi build: $(CURDIR)/dist/$(PI_PKG).tar.gz"
+
 # Release archive: CLAP plugin + standalone (C++ runtime linked statically: needs glibc >= 2.38, libX11, libXext,
 # libasound), docs, licences.  -> dist/Emulated-3-v$(VERSION)-linux-x86_64.tar.gz
 VERSION  ?= 0.1.0-beta
@@ -171,11 +200,11 @@ check: eiii-standalone
 	./check_runtime.sh
 	./check_audio.sh
 	./check_cem_v2.sh
-	$(MAKE) $(BUILD)/tests/lcd_mapping $(BUILD)/tests/panel_functional $(BUILD)/tests/engine_instances $(BUILD)/tests/display_themes $(BUILD)/tests/media_swap $(BUILD)/tests/sampling $(BUILD)/tests/hd_changes $(BUILD)/tools/clap_host_test
+	$(MAKE) $(BUILD)/tests/lcd_mapping $(BUILD)/tests/panel_functional $(BUILD)/tests/engine_instances $(BUILD)/tests/display_themes $(BUILD)/tests/media_swap $(BUILD)/tests/sampling $(BUILD)/tests/hd_changes $(BUILD)/tests/bank_import $(BUILD)/tools/clap_host_test
 	./check_panel_ui.sh
 
 clean:
 	rm -rf build eiii-standalone
 distclean: clean
 	rm -rf dist
-.PHONY: eiii-standalone release package debug asan check clean distclean plugin
+.PHONY: eiii-standalone release pi package debug asan check clean distclean plugin

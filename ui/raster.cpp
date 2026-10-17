@@ -1,5 +1,6 @@
 // Minimal software rasterizer — see raster.h.
 #include "raster.h"
+#include "fonts.h"
 #include <algorithm>
 #include <cstring>
 
@@ -9,12 +10,6 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_STATIC
 #include "third_party/stb/stb_image_write.h"
-
-extern "C" {
-extern unsigned char const eiii_font_regular[], eiii_font_regular_end[];
-extern unsigned char const eiii_font_bold[], eiii_font_bold_end[];
-extern unsigned char const eiii_font_narrow[], eiii_font_narrow_end[];
-}
 
 namespace eiii::ui {
 
@@ -162,9 +157,9 @@ float font::draw(canvas &c, float x, float baseline, std::string_view s, float s
 
 bool load_builtin_fonts(ui_fonts &f)
 {
-	f.ok = f.regular.load(eiii_font_regular, size_t(eiii_font_regular_end - eiii_font_regular))
-		&& f.bold.load(eiii_font_bold, size_t(eiii_font_bold_end - eiii_font_bold))
-		&& f.narrow.load(eiii_font_narrow, size_t(eiii_font_narrow_end - eiii_font_narrow));
+	f.ok = f.regular.load(eiii_font_regular, eiii_font_regular_size)
+		&& f.bold.load(eiii_font_bold, eiii_font_bold_size)
+		&& f.narrow.load(eiii_font_narrow, eiii_font_narrow_size);
 	return f.ok;
 }
 
